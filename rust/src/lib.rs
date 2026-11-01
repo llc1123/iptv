@@ -1,0 +1,13 @@
+#![deny(unsafe_code)]
+//! Typed configuration and error contracts for the Rust IPTV media server.
+
+pub mod config;
+pub mod error;
+
+/// Parses the process arguments and validates the operator configuration.
+///
+/// # Errors
+/// Returns [`error::AppError`] when argument parsing or configuration validation fails.
+pub fn load_config() -> Result<config::Config, error::AppError> {
+    config::Config::from_environment()
+}
