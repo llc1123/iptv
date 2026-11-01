@@ -1,0 +1,276 @@
+{
+  "cases": [
+    {
+      "covers": [
+        "models"
+      ],
+      "expected": {
+        "fields": {
+          "auth_code": "auth-1",
+          "code": "cc1",
+          "epg_id": "epg-1",
+          "is_charge": "0",
+          "media_id": "media-1",
+          "mix_no": "7",
+          "name": "CCTV-1"
+        }
+      },
+      "id": "models-channel-alias-mapping",
+      "input": {
+        "model": "Channel",
+        "payload": {
+          "ID": "epg-1",
+          "authCode": "auth-1",
+          "code": "cc1",
+          "ignored_extra": "dropped",
+          "isCharge": "0",
+          "mediaID": "media-1",
+          "mixNo": "7",
+          "name": "CCTV-1"
+        }
+      }
+    },
+    {
+      "covers": [
+        "models"
+      ],
+      "expected": {
+        "error": {
+          "kind": "models-validation",
+          "operation": "epg-http"
+        }
+      },
+      "id": "models-channel-missing-required",
+      "input": {
+        "model": "Channel",
+        "payload": {
+          "ID": "epg-1",
+          "mixNo": "7",
+          "name": "CCTV-1"
+        }
+      }
+    },
+    {
+      "covers": [
+        "models"
+      ],
+      "expected": {
+        "error": {
+          "kind": "models-validation",
+          "operation": "epg-http"
+        }
+      },
+      "id": "models-channel-numeric-fields-rejected",
+      "input": {
+        "model": "Channel",
+        "payload": {
+          "ID": "epg-1",
+          "code": 5,
+          "mixNo": 7,
+          "name": "CCTV-1"
+        }
+      }
+    },
+    {
+      "covers": [
+        "models"
+      ],
+      "expected": {
+        "fields": {
+          "channel_id": "epg-1",
+          "end_time_ms": 1699974800000,
+          "programme_id": "",
+          "start_time_ms": 1699971200000,
+          "title": "News"
+        }
+      },
+      "id": "models-programme-string-times-coerced",
+      "input": {
+        "model": "Programme",
+        "payload": {
+          "channelID": "epg-1",
+          "endTime": 1699974800000,
+          "name": "News",
+          "startTime": "1699971200000"
+        }
+      }
+    },
+    {
+      "covers": [
+        "models"
+      ],
+      "expected": {
+        "fields": {
+          "channel_id": "epg-1",
+          "end_time_ms": 1699974800000,
+          "play_url": "http://upstream.example.com/vod/12345.m3u8",
+          "programme_id": "12345",
+          "start_time_ms": 1699971200000
+        }
+      },
+      "id": "models-tvod-coerces-numeric-id",
+      "input": {
+        "model": "TvodAddress",
+        "payload": {
+          "ID": 12345,
+          "channelID": "epg-1",
+          "endTime": 1699974800000,
+          "playURL": "http://upstream.example.com/vod/12345.m3u8",
+          "startTime": 1699971200000
+        }
+      }
+    },
+    {
+      "covers": [
+        "models"
+      ],
+      "expected": {
+        "fields": {
+          "hls_url": "http://upstream.example.com/live/c1.m3u8",
+          "is_ts": "",
+          "status": "",
+          "ts_time": ""
+        }
+      },
+      "id": "models-hls-address-defaults",
+      "input": {
+        "model": "HlsAddress",
+        "payload": {
+          "hlsUrl": "http://upstream.example.com/live/c1.m3u8"
+        }
+      }
+    },
+    {
+      "covers": [
+        "models"
+      ],
+      "expected": {
+        "error": {
+          "kind": "models-validation",
+          "operation": "epg-http"
+        }
+      },
+      "id": "models-hls-address-numeric-tstime-rejected",
+      "input": {
+        "model": "HlsAddress",
+        "payload": {
+          "hlsUrl": "http://upstream.example.com/live/c1.m3u8",
+          "tsTime": 5
+        }
+      }
+    },
+    {
+      "covers": [
+        "models"
+      ],
+      "expected": {
+        "fields": {
+          "channel_id": "c1",
+          "channel_sdp": "",
+          "channel_url": "",
+          "code": "cc1",
+          "group_title": "News",
+          "logo_url": "",
+          "mix_no": "1",
+          "name": "CCTV-1",
+          "time_shift": "",
+          "time_shift_length": "",
+          "time_shift_url": "http://upstream.example.com/ts/c1"
+        }
+      },
+      "id": "models-boot-channel-group-title",
+      "input": {
+        "model": "BootChannel",
+        "payload": {
+          "ChannelID": "c1",
+          "ChannelName": "CCTV-1",
+          "TimeShiftURL": "http://upstream.example.com/ts/c1",
+          "UserChannelID": "1",
+          "code": "cc1",
+          "group_title": "News"
+        }
+      }
+    },
+    {
+      "covers": [
+        "models"
+      ],
+      "expected": {
+        "fields": {
+          "data": [
+            {
+              "channel_id": "epg-1",
+              "end_time_ms": 1699974800000,
+              "programme_id": "prog-1",
+              "start_time_ms": 1699971200000,
+              "title": "News"
+            }
+          ],
+          "error_code": "1001",
+          "error_message": "boom",
+          "status": "0"
+        }
+      },
+      "id": "models-programme-response-mapping",
+      "input": {
+        "model": "ProgrammeResponse",
+        "payload": {
+          "data": [
+            {
+              "ID": "prog-1",
+              "channelID": "epg-1",
+              "endTime": 1699974800000,
+              "name": "News",
+              "startTime": 1699971200000
+            }
+          ],
+          "errCode": "1001",
+          "errMsg": "boom",
+          "status": "0"
+        }
+      }
+    },
+    {
+      "covers": [
+        "models"
+      ],
+      "expected": {
+        "fields": {
+          "data": [
+            {
+              "auth_code": "auth-1",
+              "code": "cc1",
+              "epg_id": "epg-1",
+              "is_charge": "0",
+              "media_id": "media-1",
+              "mix_no": "7",
+              "name": "CCTV-1"
+            }
+          ],
+          "error_code": "",
+          "error_message": "",
+          "status": "1"
+        }
+      },
+      "id": "models-channel-list-response-mapping",
+      "input": {
+        "model": "ChannelListResponse",
+        "payload": {
+          "data": [
+            {
+              "ID": "epg-1",
+              "authCode": "auth-1",
+              "code": "cc1",
+              "isCharge": "0",
+              "mediaID": "media-1",
+              "mixNo": "7",
+              "name": "CCTV-1"
+            }
+          ],
+          "status": "1"
+        }
+      }
+    }
+  ],
+  "family": "models"
+}

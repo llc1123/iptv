@@ -1,0 +1,130 @@
+{
+  "cases": [
+    {
+      "covers": [
+        "url-join",
+        "relative-urls"
+      ],
+      "expected": {
+        "url": "http://upstream.example.com:8080/live/seg1.ts"
+      },
+      "id": "urljoin-relative-file",
+      "input": {
+        "base": "http://upstream.example.com:8080/live/chan.m3u8",
+        "reference": "seg1.ts"
+      }
+    },
+    {
+      "covers": [
+        "url-join",
+        "relative-urls"
+      ],
+      "expected": {
+        "url": "http://upstream.example.com:8080/x.ts"
+      },
+      "id": "urljoin-relative-parent",
+      "input": {
+        "base": "http://upstream.example.com:8080/live/chan.m3u8",
+        "reference": "../x.ts"
+      }
+    },
+    {
+      "covers": [
+        "url-join",
+        "relative-urls"
+      ],
+      "expected": {
+        "url": "http://upstream.example.com:8080/abs.ts"
+      },
+      "id": "urljoin-absolute-path",
+      "input": {
+        "base": "http://upstream.example.com:8080/live/chan.m3u8",
+        "reference": "/abs.ts"
+      }
+    },
+    {
+      "covers": [
+        "url-join",
+        "protocol-relative-urls"
+      ],
+      "expected": {
+        "url": "http://cdn.example.com/s.ts"
+      },
+      "id": "urljoin-protocol-relative",
+      "input": {
+        "base": "http://upstream.example.com:8080/live/chan.m3u8",
+        "reference": "//cdn.example.com/s.ts"
+      }
+    },
+    {
+      "covers": [
+        "url-join",
+        "relative-urls"
+      ],
+      "expected": {
+        "url": "http://upstream.example.com:8080/live/seg.ts?token=1"
+      },
+      "id": "urljoin-query-on-reference",
+      "input": {
+        "base": "http://upstream.example.com:8080/live/chan.m3u8",
+        "reference": "seg.ts?token=1"
+      }
+    },
+    {
+      "covers": [
+        "url-join",
+        "query-urls"
+      ],
+      "expected": {
+        "url": "http://upstream.example.com:8080/live/chan.m3u8?start=1"
+      },
+      "id": "urljoin-query-only",
+      "input": {
+        "base": "http://upstream.example.com:8080/live/chan.m3u8",
+        "reference": "?start=1"
+      }
+    },
+    {
+      "covers": [
+        "url-join"
+      ],
+      "expected": {
+        "url": "http://other.example.com/z.ts"
+      },
+      "id": "urljoin-absolute-url",
+      "input": {
+        "base": "http://upstream.example.com:8080/live/chan.m3u8",
+        "reference": "http://other.example.com/z.ts"
+      }
+    },
+    {
+      "covers": [
+        "url-join",
+        "relative-urls"
+      ],
+      "expected": {
+        "url": "http://upstream.example.com:8080/live/chan.m3u8#frag"
+      },
+      "id": "urljoin-fragment-only",
+      "input": {
+        "base": "http://upstream.example.com:8080/live/chan.m3u8",
+        "reference": "#frag"
+      }
+    },
+    {
+      "covers": [
+        "url-join",
+        "relative-urls"
+      ],
+      "expected": {
+        "url": "http://upstream.example.com:8080/live/chan.m3u8"
+      },
+      "id": "urljoin-empty-reference",
+      "input": {
+        "base": "http://upstream.example.com:8080/live/chan.m3u8",
+        "reference": ""
+      }
+    }
+  ],
+  "family": "urljoin"
+}

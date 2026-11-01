@@ -1,0 +1,213 @@
+{
+  "cases": [
+    {
+      "covers": [
+        "option60"
+      ],
+      "expected": {
+        "ciphertext_hex": "6117e9a7391df17d7723760c03340665",
+        "declared_length": 49,
+        "hash_key_hex": "27381bd2122799804f53098f0940c3ac",
+        "wire_hex": "00001f31017856341200000000cb047b451400000027381bd2122799804f53098f0940c3ac6117e9a7391df17d7723760c03340665"
+      },
+      "id": "option60-known-answer",
+      "input": {
+        "direction": "encode",
+        "login": "fixture-user",
+        "password": "fixture-dhcp-password",
+        "r_hex": "7856341200000000",
+        "ts_hex": "cb047b4514000000"
+      }
+    },
+    {
+      "covers": [
+        "option60"
+      ],
+      "expected": {
+        "ciphertext_hex": "85f0ceaf48734c237bce86aaef1d8d59",
+        "declared_length": 49,
+        "hash_key_hex": "03932303fcdd4d1aa65e62f20e7d9944",
+        "wire_hex": "00001f310101000000000000002a0000000000000003932303fcdd4d1aa65e62f20e7d994485f0ceaf48734c237bce86aaef1d8d59"
+      },
+      "id": "option60-second-vector",
+      "input": {
+        "direction": "encode",
+        "login": "12345678",
+        "password": "short",
+        "r_hex": "0100000000000000",
+        "ts_hex": "2a00000000000000"
+      }
+    },
+    {
+      "covers": [
+        "option60",
+        "aligned-padding"
+      ],
+      "expected": {
+        "ciphertext_hex": "e2f4e892c4e22c4b317a17fadcc89102",
+        "declared_length": 49,
+        "hash_key_hex": "27381bd2122799804f53098f0940c3ac",
+        "wire_hex": "00001f31017856341200000000cb047b451400000027381bd2122799804f53098f0940c3ace2f4e892c4e22c4b317a17fadcc89102"
+      },
+      "id": "option60-zero-pad-aligned",
+      "input": {
+        "direction": "encode",
+        "login": "12345678",
+        "password": "fixture-dhcp-password",
+        "r_hex": "7856341200000000",
+        "ts_hex": "cb047b4514000000"
+      }
+    },
+    {
+      "covers": [
+        "option60",
+        "non-aligned-padding"
+      ],
+      "expected": {
+        "ciphertext_hex": "6117e9a7391df17d7723760c03340665",
+        "declared_length": 49,
+        "hash_key_hex": "27381bd2122799804f53098f0940c3ac",
+        "wire_hex": "00001f31017856341200000000cb047b451400000027381bd2122799804f53098f0940c3ac6117e9a7391df17d7723760c03340665"
+      },
+      "id": "option60-zero-pad-non-aligned",
+      "input": {
+        "direction": "encode",
+        "login": "fixture-user",
+        "password": "fixture-dhcp-password",
+        "r_hex": "7856341200000000",
+        "ts_hex": "cb047b4514000000"
+      }
+    },
+    {
+      "covers": [
+        "option60",
+        "aligned-padding"
+      ],
+      "expected": {
+        "ciphertext_hex": "317a17fadcc89102",
+        "declared_length": 41,
+        "hash_key_hex": "27381bd2122799804f53098f0940c3ac",
+        "wire_hex": "00001f29017856341200000000cb047b451400000027381bd2122799804f53098f0940c3ac317a17fadcc89102"
+      },
+      "id": "option60-zero-pad-empty-login",
+      "input": {
+        "direction": "encode",
+        "login": "",
+        "password": "fixture-dhcp-password",
+        "r_hex": "7856341200000000",
+        "ts_hex": "cb047b4514000000"
+      }
+    },
+    {
+      "covers": [
+        "option60"
+      ],
+      "expected": {
+        "ciphertext_hex": "e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b60e998bdf13be42a7",
+        "declared_length": 249,
+        "hash_key_hex": "27381bd2122799804f53098f0940c3ac",
+        "wire_hex": "00001ff9017856341200000000cb047b451400000027381bd2122799804f53098f0940c3ace7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b6e7b26900952bc3b60e998bdf13be42a7"
+      },
+      "id": "option60-near-length-limit",
+      "input": {
+        "direction": "encode",
+        "login": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "password": "fixture-dhcp-password",
+        "r_hex": "7856341200000000",
+        "ts_hex": "cb047b4514000000"
+      }
+    },
+    {
+      "covers": [
+        "option60",
+        "malformed-lengths"
+      ],
+      "expected": {
+        "error": {
+          "detail": "CTC Option 60 exceeds the one-byte length field",
+          "kind": "option60-oversized-payload",
+          "operation": "dhcp"
+        }
+      },
+      "id": "option60-oversized-login",
+      "input": {
+        "direction": "encode",
+        "login": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "password": "fixture-dhcp-password",
+        "r_hex": "7856341200000000",
+        "ts_hex": "cb047b4514000000"
+      }
+    },
+    {
+      "covers": [
+        "option60"
+      ],
+      "expected": {
+        "error": {
+          "kind": "option60-malformed-prefix",
+          "operation": "dhcp"
+        }
+      },
+      "id": "option60-reject-bad-prefix",
+      "input": {
+        "direction": "decode",
+        "violates": "prefix",
+        "wire_hex": "00001e31017856341200000000cb047b451400000027381bd2122799804f53098f0940c3ac6117e9a7391df17d7723760c03340665"
+      }
+    },
+    {
+      "covers": [
+        "option60",
+        "malformed-lengths"
+      ],
+      "expected": {
+        "error": {
+          "kind": "option60-malformed-length",
+          "operation": "dhcp"
+        }
+      },
+      "id": "option60-reject-length-mismatch",
+      "input": {
+        "direction": "decode",
+        "violates": "length",
+        "wire_hex": "00001f32017856341200000000cb047b451400000027381bd2122799804f53098f0940c3ac6117e9a7391df17d7723760c03340665"
+      }
+    },
+    {
+      "covers": [
+        "option60",
+        "malformed-lengths"
+      ],
+      "expected": {
+        "error": {
+          "kind": "option60-malformed-length",
+          "operation": "dhcp"
+        }
+      },
+      "id": "option60-reject-truncated",
+      "input": {
+        "direction": "decode",
+        "violates": "length",
+        "wire_hex": "00001f31017856341200000000cb047b451400000027381bd2122799804f53098f0940c3ac6117e9a7391df17d"
+      }
+    },
+    {
+      "covers": [
+        "option60"
+      ],
+      "expected": {
+        "error": {
+          "kind": "option60-malformed-method",
+          "operation": "dhcp"
+        }
+      },
+      "id": "option60-reject-bad-method",
+      "input": {
+        "direction": "decode",
+        "violates": "method",
+        "wire_hex": "00001f31027856341200000000cb047b451400000027381bd2122799804f53098f0940c3ac6117e9a7391df17d7723760c03340665"
+      }
+    }
+  ],
+  "family": "option60"
+}

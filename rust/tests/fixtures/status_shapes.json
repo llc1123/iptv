@@ -1,0 +1,359 @@
+{
+  "cases": [
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "dhcp: fixture failure in dhcp"
+        },
+        "status": 503
+      },
+      "id": "status-dhcp",
+      "input": {
+        "detail": "fixture failure in dhcp",
+        "kind": "http-error",
+        "operation": "dhcp"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "epg-auth: fixture failure in epg-auth"
+        },
+        "status": 503
+      },
+      "id": "status-epg-auth",
+      "input": {
+        "detail": "fixture failure in epg-auth",
+        "kind": "http-error",
+        "operation": "epg-auth"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "epg-channel-codes: fixture failure in epg-channel-codes"
+        },
+        "status": 503
+      },
+      "id": "status-epg-channel-codes",
+      "input": {
+        "detail": "fixture failure in epg-channel-codes",
+        "kind": "http-error",
+        "operation": "epg-channel-codes"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "epg-channels: fixture failure in epg-channels"
+        },
+        "status": 503
+      },
+      "id": "status-epg-channels",
+      "input": {
+        "detail": "fixture failure in epg-channels",
+        "kind": "http-error",
+        "operation": "epg-channels"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "epg-discovery: fixture failure in epg-discovery"
+        },
+        "status": 503
+      },
+      "id": "status-epg-discovery",
+      "input": {
+        "detail": "fixture failure in epg-discovery",
+        "kind": "http-error",
+        "operation": "epg-discovery"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "epg-http: fixture failure in epg-http"
+        },
+        "status": 503
+      },
+      "id": "status-epg-http",
+      "input": {
+        "detail": "fixture failure in epg-http",
+        "kind": "http-error",
+        "operation": "epg-http"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "epg-programmes: fixture failure in epg-programmes"
+        },
+        "status": 503
+      },
+      "id": "status-epg-programmes",
+      "input": {
+        "detail": "fixture failure in epg-programmes",
+        "kind": "http-error",
+        "operation": "epg-programmes"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "epg-replay: fixture failure in epg-replay"
+        },
+        "status": 503
+      },
+      "id": "status-epg-replay",
+      "input": {
+        "detail": "fixture failure in epg-replay",
+        "kind": "http-error",
+        "operation": "epg-replay"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "epg-stream: fixture failure in epg-stream"
+        },
+        "status": 503
+      },
+      "id": "status-epg-stream",
+      "input": {
+        "detail": "fixture failure in epg-stream",
+        "kind": "http-error",
+        "operation": "epg-stream"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "epg-tvod: fixture failure in epg-tvod"
+        },
+        "status": 503
+      },
+      "id": "status-epg-tvod",
+      "input": {
+        "detail": "fixture failure in epg-tvod",
+        "kind": "http-error",
+        "operation": "epg-tvod"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "guide-cache: fixture failure in guide-cache"
+        },
+        "status": 503
+      },
+      "id": "status-guide-cache",
+      "input": {
+        "detail": "fixture failure in guide-cache",
+        "kind": "http-error",
+        "operation": "guide-cache"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "hls-proxy: fixture failure in hls-proxy"
+        },
+        "status": 502
+      },
+      "id": "status-hls-proxy",
+      "input": {
+        "detail": "fixture failure in hls-proxy",
+        "kind": "http-error",
+        "operation": "hls-proxy"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "logo: fixture failure in logo"
+        },
+        "status": 503
+      },
+      "id": "status-logo",
+      "input": {
+        "detail": "fixture failure in logo",
+        "kind": "http-error",
+        "operation": "logo"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "logo-converter: fixture failure in logo-converter"
+        },
+        "status": 503
+      },
+      "id": "status-logo-converter",
+      "input": {
+        "detail": "fixture failure in logo-converter",
+        "kind": "http-error",
+        "operation": "logo-converter"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "service: fixture failure in service"
+        },
+        "status": 503
+      },
+      "id": "status-service",
+      "input": {
+        "detail": "fixture failure in service",
+        "kind": "http-error",
+        "operation": "service"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "body": {
+          "error": "hls-proxy: upstream GET http://upstream.example.com/live/chan.m3u8?token=fixture-token-00000000000001 failed with 503"
+        },
+        "status": 502
+      },
+      "id": "status-detail-with-signed-url-kept-by-poc",
+      "input": {
+        "detail": "upstream GET http://upstream.example.com/live/chan.m3u8?token=fixture-token-00000000000001 failed with 503",
+        "kind": "http-error",
+        "operation": "hls-proxy"
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "result": "ok"
+      },
+      "id": "provider-status-success",
+      "input": {
+        "kind": "provider-status",
+        "operation": "epg-channel-codes",
+        "payload": {
+          "status": "1"
+        }
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "error": {
+          "detail": "boom",
+          "kind": "provider-status-failure",
+          "operation": "epg-channel-codes"
+        }
+      },
+      "id": "provider-status-failure-err-message",
+      "input": {
+        "kind": "provider-status",
+        "operation": "epg-channel-codes",
+        "payload": {
+          "errCode": "1001",
+          "errMsg": "boom",
+          "status": "0"
+        }
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "error": {
+          "detail": "window rejected",
+          "kind": "provider-status-failure",
+          "operation": "epg-programmes"
+        }
+      },
+      "id": "provider-status-failure-programmes",
+      "input": {
+        "kind": "provider-status",
+        "operation": "epg-programmes",
+        "payload": {
+          "errCode": "1002",
+          "errMsg": "window rejected",
+          "status": "2"
+        }
+      }
+    },
+    {
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "expected": {
+        "error": {
+          "detail": "status=0",
+          "kind": "provider-status-failure",
+          "operation": "epg-tvod"
+        }
+      },
+      "id": "provider-status-failure-fallback",
+      "input": {
+        "kind": "provider-status",
+        "operation": "epg-tvod",
+        "payload": {
+          "errCode": "1003",
+          "errMsg": "",
+          "status": "0"
+        }
+      }
+    }
+  ],
+  "family": "status"
+}

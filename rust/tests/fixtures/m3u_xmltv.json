@@ -1,0 +1,352 @@
+{
+  "cases": [
+    {
+      "covers": [
+        "m3u"
+      ],
+      "expected": {
+        "text": "#EXTM3U x-tvg-url=\"http://192.0.2.1:8080/xmltv.xml\"\n#EXTINF:-1 tvg-id=\"c1\" tvg-name=\"CCTV-1\",CCTV-1\nhttp://192.0.2.1:8080/stream/c1.m3u8\n#EXTINF:-1 tvg-id=\"c2\" tvg-name=\"CCTV-2\",CCTV-2\nhttp://192.0.2.1:8080/stream/c2.m3u8\n"
+      },
+      "id": "render-m3u-basic",
+      "input": {
+        "base_url": "http://192.0.2.1:8080",
+        "catchup_days": 0,
+        "channels": [
+          {
+            "ChannelID": "c1",
+            "ChannelLogURL": "",
+            "ChannelName": "CCTV-1",
+            "ChannelSDP": "",
+            "ChannelURL": "",
+            "TimeShift": "",
+            "TimeShiftLength": "",
+            "TimeShiftURL": "http://upstream.example.com:8080/ts/c1",
+            "UserChannelID": "1",
+            "code": "",
+            "group_title": ""
+          },
+          {
+            "ChannelID": "c2",
+            "ChannelLogURL": "",
+            "ChannelName": "CCTV-2",
+            "ChannelSDP": "",
+            "ChannelURL": "",
+            "TimeShift": "",
+            "TimeShiftLength": "",
+            "TimeShiftURL": "http://upstream.example.com:8080/ts/c2",
+            "UserChannelID": "2",
+            "code": "",
+            "group_title": ""
+          }
+        ],
+        "programmes": [],
+        "renderer": "m3u",
+        "timezone_offset_minutes": 480
+      }
+    },
+    {
+      "covers": [
+        "m3u"
+      ],
+      "expected": {
+        "text": "#EXTM3U x-tvg-url=\"http://192.0.2.1:8080/xmltv.xml\"\n#EXTINF:-1 tvg-id=\"c1\" tvg-name=\"CCTV-1\" group-title=\"Sports\" catchup=\"append\" catchup-days=\"7\" catchup-source=\"http://192.0.2.1:8080/catchup/c1.m3u8?utc={utc}&lutc={lutc}\" tvg-logo=\"http://upstream.example.com/logo/c1.png\",CCTV-1\nhttp://192.0.2.1:8080/stream/c1.m3u8\n"
+      },
+      "id": "render-m3u-catchup-append",
+      "input": {
+        "base_url": "http://192.0.2.1:8080",
+        "catchup_days": 7,
+        "channels": [
+          {
+            "ChannelID": "c1",
+            "ChannelLogURL": "http://upstream.example.com/logo/c1.png",
+            "ChannelName": "CCTV-1",
+            "ChannelSDP": "",
+            "ChannelURL": "",
+            "TimeShift": "1",
+            "TimeShiftLength": "7200",
+            "TimeShiftURL": "http://upstream.example.com:8080/ts/c1",
+            "UserChannelID": "1",
+            "code": "",
+            "group_title": "Sports"
+          }
+        ],
+        "programmes": [],
+        "renderer": "m3u",
+        "timezone_offset_minutes": 480
+      }
+    },
+    {
+      "covers": [
+        "m3u"
+      ],
+      "expected": {
+        "text": "#EXTM3U x-tvg-url=\"http://192.0.2.1:8080/xmltv.xml\"\n#EXTINF:-1 tvg-id=\"c1\" tvg-name=\"CCTV-1\" group-title=\"Sports\" tvg-logo=\"http://upstream.example.com/logo/c1.png\",CCTV-1\nhttp://192.0.2.1:8080/stream/c1.m3u8\n"
+      },
+      "id": "render-m3u-catchup-disabled-with-zero-days",
+      "input": {
+        "base_url": "http://192.0.2.1:8080",
+        "catchup_days": 0,
+        "channels": [
+          {
+            "ChannelID": "c1",
+            "ChannelLogURL": "http://upstream.example.com/logo/c1.png",
+            "ChannelName": "CCTV-1",
+            "ChannelSDP": "",
+            "ChannelURL": "",
+            "TimeShift": "1",
+            "TimeShiftLength": "7200",
+            "TimeShiftURL": "http://upstream.example.com:8080/ts/c1",
+            "UserChannelID": "1",
+            "code": "",
+            "group_title": "Sports"
+          }
+        ],
+        "programmes": [],
+        "renderer": "m3u",
+        "timezone_offset_minutes": 480
+      }
+    },
+    {
+      "covers": [
+        "m3u",
+        "xml-escaping"
+      ],
+      "expected": {
+        "text": "#EXTM3U x-tvg-url=\"http://192.0.2.1:8080/xmltv.xml\"\n#EXTINF:-1 tvg-id=\"ch 1&2\" tvg-name=\"Rock & \"Roll\" <Live>\" tvg-logo=\"http://upstream.example.com/logo/ch%201.png\",Rock & \"Roll\" <Live>\nhttp://192.0.2.1:8080/stream/ch%201%262.m3u8\n"
+      },
+      "id": "render-m3u-name-not-escaped",
+      "input": {
+        "base_url": "http://192.0.2.1:8080",
+        "catchup_days": 0,
+        "channels": [
+          {
+            "ChannelID": "ch 1&2",
+            "ChannelLogURL": "http://upstream.example.com/logo/ch%201.png",
+            "ChannelName": "Rock & \"Roll\" <Live>",
+            "ChannelSDP": "",
+            "ChannelURL": "",
+            "TimeShift": "",
+            "TimeShiftLength": "",
+            "TimeShiftURL": "http://upstream.example.com:8080/ts/ch 1&2",
+            "UserChannelID": "3",
+            "code": "",
+            "group_title": ""
+          }
+        ],
+        "programmes": [],
+        "renderer": "m3u",
+        "timezone_offset_minutes": 480
+      }
+    },
+    {
+      "covers": [
+        "m3u"
+      ],
+      "expected": {
+        "text": "#EXTM3U x-tvg-url=\"http://192.0.2.1:8080/xmltv.xml\"\n#EXTINF:-1 tvg-id=\"c1\" tvg-name=\"CCTV-1\",CCTV-1\nhttp://192.0.2.1:8080//stream/c1.m3u8\n#EXTINF:-1 tvg-id=\"c2\" tvg-name=\"CCTV-2\",CCTV-2\nhttp://192.0.2.1:8080//stream/c2.m3u8\n"
+      },
+      "id": "render-m3u-trailing-slash-base",
+      "input": {
+        "base_url": "http://192.0.2.1:8080/",
+        "catchup_days": 0,
+        "channels": [
+          {
+            "ChannelID": "c1",
+            "ChannelLogURL": "",
+            "ChannelName": "CCTV-1",
+            "ChannelSDP": "",
+            "ChannelURL": "",
+            "TimeShift": "",
+            "TimeShiftLength": "",
+            "TimeShiftURL": "http://upstream.example.com:8080/ts/c1",
+            "UserChannelID": "1",
+            "code": "",
+            "group_title": ""
+          },
+          {
+            "ChannelID": "c2",
+            "ChannelLogURL": "",
+            "ChannelName": "CCTV-2",
+            "ChannelSDP": "",
+            "ChannelURL": "",
+            "TimeShift": "",
+            "TimeShiftLength": "",
+            "TimeShiftURL": "http://upstream.example.com:8080/ts/c2",
+            "UserChannelID": "2",
+            "code": "",
+            "group_title": ""
+          }
+        ],
+        "programmes": [],
+        "renderer": "m3u",
+        "timezone_offset_minutes": 480
+      }
+    },
+    {
+      "covers": [
+        "xmltv",
+        "xml-escaping"
+      ],
+      "expected": {
+        "text": "<?xml version='1.0' encoding='utf-8'?>\n<tv generator-info-name=\"iptv-media-server\">\n  <channel id=\"ch 1&amp;2\">\n    <display-name>Rock &amp; \"Roll\" &lt;Live&gt;</display-name>\n    <icon src=\"http://upstream.example.com/logo/ch%201.png\" />\n  </channel>\n  <programme start=\"20231114221320 +0800\" stop=\"20231114231320 +0800\" channel=\"ch 1&amp;2\">\n    <title>Morning &amp; &lt;News&gt;</title>\n    <episode-num system=\"iptv-id\">prog/1</episode-num>\n    <url>http://192.0.2.1:8080/replay/ch%201%262/prog%2F1.m3u8</url>\n  </programme>\n</tv>"
+      },
+      "id": "render-xmltv-escaping-and-replay-url",
+      "input": {
+        "base_url": "http://192.0.2.1:8080",
+        "catchup_days": 0,
+        "channels": [
+          {
+            "ChannelID": "ch 1&2",
+            "ChannelLogURL": "http://upstream.example.com/logo/ch%201.png",
+            "ChannelName": "Rock & \"Roll\" <Live>",
+            "ChannelSDP": "",
+            "ChannelURL": "",
+            "TimeShift": "",
+            "TimeShiftLength": "",
+            "TimeShiftURL": "http://upstream.example.com:8080/ts/ch 1&2",
+            "UserChannelID": "3",
+            "code": "",
+            "group_title": ""
+          }
+        ],
+        "programmes": [
+          {
+            "ID": "prog/1",
+            "channelID": "ch 1&2",
+            "endTime": 1699974800000,
+            "name": "Morning & <News>",
+            "startTime": 1699971200000
+          }
+        ],
+        "renderer": "xmltv",
+        "timezone_offset_minutes": 480
+      }
+    },
+    {
+      "covers": [
+        "xmltv"
+      ],
+      "expected": {
+        "text": "<?xml version='1.0' encoding='utf-8'?>\n<tv generator-info-name=\"iptv-media-server\">\n  <channel id=\"c1\">\n    <display-name>CCTV-1</display-name>\n  </channel>\n  <channel id=\"c2\">\n    <display-name>CCTV-2</display-name>\n  </channel>\n  <programme start=\"20231114231320 +0800\" stop=\"20231115001320 +0800\" channel=\"c1\">\n    <title>Evening News</title>\n    <episode-num system=\"iptv-id\">prog-2</episode-num>\n    <url>http://192.0.2.1:8080/replay/c1/prog-2.m3u8</url>\n  </programme>\n</tv>"
+      },
+      "id": "render-xmltv-dedupe-and-unknown-channel",
+      "input": {
+        "base_url": "http://192.0.2.1:8080",
+        "catchup_days": 0,
+        "channels": [
+          {
+            "ChannelID": "c1",
+            "ChannelLogURL": "",
+            "ChannelName": "CCTV-1",
+            "ChannelSDP": "",
+            "ChannelURL": "",
+            "TimeShift": "",
+            "TimeShiftLength": "",
+            "TimeShiftURL": "http://upstream.example.com:8080/ts/c1",
+            "UserChannelID": "1",
+            "code": "",
+            "group_title": ""
+          },
+          {
+            "ChannelID": "c2",
+            "ChannelLogURL": "",
+            "ChannelName": "CCTV-2",
+            "ChannelSDP": "",
+            "ChannelURL": "",
+            "TimeShift": "",
+            "TimeShiftLength": "",
+            "TimeShiftURL": "http://upstream.example.com:8080/ts/c2",
+            "UserChannelID": "2",
+            "code": "",
+            "group_title": ""
+          }
+        ],
+        "programmes": [
+          {
+            "ID": "prog-2",
+            "channelID": "c1",
+            "endTime": 1699978400000,
+            "name": "Evening News",
+            "startTime": 1699974800000
+          },
+          {
+            "ID": "prog-ghost",
+            "channelID": "missing",
+            "endTime": 1699971200000,
+            "name": "Ghost",
+            "startTime": 1699967600000
+          },
+          {
+            "ID": "prog-2",
+            "channelID": "c1",
+            "endTime": 1699978400000,
+            "name": "Evening News",
+            "startTime": 1699974800000
+          }
+        ],
+        "renderer": "xmltv",
+        "timezone_offset_minutes": 480
+      }
+    },
+    {
+      "covers": [
+        "xmltv"
+      ],
+      "expected": {
+        "text": "<?xml version='1.0' encoding='utf-8'?>\n<tv generator-info-name=\"iptv-media-server\">\n  <channel id=\"c1\">\n    <display-name>CCTV-1</display-name>\n  </channel>\n  <channel id=\"c2\">\n    <display-name>CCTV-2</display-name>\n  </channel>\n  <programme start=\"20231114221320 +0800\" stop=\"20231114231320 +0800\" channel=\"c1\">\n    <title>Morning &amp; &lt;News&gt;</title>\n    <episode-num system=\"iptv-id\">prog/1</episode-num>\n    <url>http://192.0.2.1:8080/replay/c1/prog%2F1.m3u8</url>\n  </programme>\n  <programme start=\"20231114231320 +0800\" stop=\"20231115001320 +0800\" channel=\"c1\">\n    <title>Evening News</title>\n    <episode-num system=\"iptv-id\">prog-2</episode-num>\n    <url>http://192.0.2.1:8080/replay/c1/prog-2.m3u8</url>\n  </programme>\n</tv>"
+      },
+      "id": "render-xmltv-timezone-offset",
+      "input": {
+        "base_url": "http://192.0.2.1:8080",
+        "catchup_days": 0,
+        "channels": [
+          {
+            "ChannelID": "c1",
+            "ChannelLogURL": "",
+            "ChannelName": "CCTV-1",
+            "ChannelSDP": "",
+            "ChannelURL": "",
+            "TimeShift": "",
+            "TimeShiftLength": "",
+            "TimeShiftURL": "http://upstream.example.com:8080/ts/c1",
+            "UserChannelID": "1",
+            "code": "",
+            "group_title": ""
+          },
+          {
+            "ChannelID": "c2",
+            "ChannelLogURL": "",
+            "ChannelName": "CCTV-2",
+            "ChannelSDP": "",
+            "ChannelURL": "",
+            "TimeShift": "",
+            "TimeShiftLength": "",
+            "TimeShiftURL": "http://upstream.example.com:8080/ts/c2",
+            "UserChannelID": "2",
+            "code": "",
+            "group_title": ""
+          }
+        ],
+        "programmes": [
+          {
+            "ID": "prog/1",
+            "channelID": "c1",
+            "endTime": 1699974800000,
+            "name": "Morning & <News>",
+            "startTime": 1699971200000
+          },
+          {
+            "ID": "prog-2",
+            "channelID": "c1",
+            "endTime": 1699978400000,
+            "name": "Evening News",
+            "startTime": 1699974800000
+          }
+        ],
+        "renderer": "xmltv",
+        "timezone_offset_minutes": 480
+      }
+    }
+  ],
+  "family": "render"
+}
