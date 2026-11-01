@@ -1,0 +1,28 @@
+# Python and local tooling.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ty/
+
+# Runtime output and generated release artifacts.
+/var/
+/dist/
+/var/iptv-e2e.env
+
+# Local captures, device dumps, and sensitive artifacts.
+*.pcap
+*.pcapng
+*.apk
+*.aab
+*.so
+*.log
+*.pid
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+*.idsig
