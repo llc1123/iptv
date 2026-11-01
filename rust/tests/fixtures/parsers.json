@@ -1,0 +1,192 @@
+{
+  "cases": [
+    {
+      "covers": [
+        "parsers"
+      ],
+      "expected": {
+        "channels": [
+          {
+            "channel_id": "c1",
+            "channel_sdp": "sdp1",
+            "channel_url": "rtsp://c1",
+            "code": "cc1",
+            "group_title": "",
+            "logo_url": "http://upstream.example.com/logo/c1.png",
+            "mix_no": "1",
+            "name": "CCTV-1",
+            "time_shift": "1",
+            "time_shift_length": "7200",
+            "time_shift_url": "http://upstream.example.com/ts/c1"
+          },
+          {
+            "channel_id": "c2",
+            "channel_sdp": "",
+            "channel_url": "",
+            "code": "",
+            "group_title": "",
+            "logo_url": "",
+            "mix_no": "2",
+            "name": "CCTV-2",
+            "time_shift": "",
+            "time_shift_length": "",
+            "time_shift_url": "http://upstream.example.com/ts/c2"
+          }
+        ]
+      },
+      "id": "parsers-multi-record",
+      "input": {
+        "body": "payload ChannelID=\"c1\" ChannelName=\"CCTV-1\" UserChannelID=\"1\" TimeShiftURL=\"http://upstream.example.com/ts/c1\" ChannelURL=\"rtsp://c1\" ChannelSDP=\"sdp1\" TimeShift=\"1\" TimeShiftLength=\"7200\" ChannelLogURL=\"http://upstream.example.com/logo/c1.png\" code=\"cc1\"; ChannelID=\"c2\" ChannelName=\"CCTV-2\" UserChannelID=\"2\" TimeShiftURL=\"http://upstream.example.com/ts/c2\""
+      }
+    },
+    {
+      "covers": [
+        "parsers",
+        "duplicate-attributes"
+      ],
+      "expected": {
+        "channels": [
+          {
+            "channel_id": "c1",
+            "channel_sdp": "",
+            "channel_url": "",
+            "code": "",
+            "group_title": "",
+            "logo_url": "",
+            "mix_no": "7",
+            "name": "second",
+            "time_shift": "",
+            "time_shift_length": "",
+            "time_shift_url": "t1"
+          }
+        ]
+      },
+      "id": "parsers-duplicate-attributes-last-wins",
+      "input": {
+        "body": "x ChannelID=\"c1\" ChannelName=\"first\" ChannelName=\"second\" UserChannelID=\"7\" TimeShiftURL=\"t1\""
+      }
+    },
+    {
+      "covers": [
+        "parsers",
+        "html-entities"
+      ],
+      "expected": {
+        "channels": [
+          {
+            "channel_id": "c1",
+            "channel_sdp": "",
+            "channel_url": "",
+            "code": "",
+            "group_title": "",
+            "logo_url": "",
+            "mix_no": "7",
+            "name": "News & Sports <Live> \"Q\" &amp;",
+            "time_shift": "",
+            "time_shift_length": "",
+            "time_shift_url": "t1"
+          }
+        ]
+      },
+      "id": "parsers-html-entities",
+      "input": {
+        "body": "x ChannelID=\"c1\" ChannelName=\"News &amp; Sports &lt;Live&gt; &quot;Q&quot; &amp;amp;\" UserChannelID=\"7\" TimeShiftURL=\"t1\""
+      }
+    },
+    {
+      "covers": [
+        "parsers"
+      ],
+      "expected": {
+        "channels": [
+          {
+            "channel_id": "c1",
+            "channel_sdp": "",
+            "channel_url": "",
+            "code": "",
+            "group_title": "",
+            "logo_url": "",
+            "mix_no": "7",
+            "name": "A \\",
+            "time_shift": "",
+            "time_shift_length": "",
+            "time_shift_url": "t1"
+          }
+        ]
+      },
+      "id": "parsers-escaped-quote-truncates-value",
+      "input": {
+        "body": "x ChannelID=\"c1\" ChannelName=\"A \\\"B\\\" tail\" UserChannelID=\"7\" TimeShiftURL=\"t1\""
+      }
+    },
+    {
+      "covers": [
+        "parsers"
+      ],
+      "expected": {
+        "channels": [
+          {
+            "channel_id": "c2",
+            "channel_sdp": "",
+            "channel_url": "",
+            "code": "",
+            "group_title": "",
+            "logo_url": "",
+            "mix_no": "7",
+            "name": "n2",
+            "time_shift": "",
+            "time_shift_length": "",
+            "time_shift_url": "t2"
+          }
+        ]
+      },
+      "id": "parsers-fields-before-first-record-ignored",
+      "input": {
+        "body": "UserChannelID=\"junk\" ChannelName=\"junk\" ChannelID=\"c2\" ChannelName=\"n2\" UserChannelID=\"7\" TimeShiftURL=\"t2\""
+      }
+    },
+    {
+      "covers": [
+        "parsers"
+      ],
+      "expected": {
+        "channels": [
+          {
+            "channel_id": "good",
+            "channel_sdp": "",
+            "channel_url": "",
+            "code": "",
+            "group_title": "",
+            "logo_url": "",
+            "mix_no": "2",
+            "name": "ok",
+            "time_shift": "",
+            "time_shift_length": "",
+            "time_shift_url": "t2"
+          }
+        ]
+      },
+      "id": "parsers-missing-required-skips-record",
+      "input": {
+        "body": "x ChannelID=\"bad\" ChannelName=\"no-timeshift\" UserChannelID=\"1\"; ChannelID=\"good\" ChannelName=\"ok\" UserChannelID=\"2\" TimeShiftURL=\"t2\""
+      }
+    },
+    {
+      "covers": [
+        "parsers"
+      ],
+      "expected": {
+        "error": {
+          "detail": "no boot channel records were found in the response",
+          "kind": "parsers-no-boot-channels",
+          "operation": "epg-channels"
+        }
+      },
+      "id": "parsers-no-records-error",
+      "input": {
+        "body": "no channel markup at all"
+      }
+    }
+  ],
+  "family": "parsers"
+}

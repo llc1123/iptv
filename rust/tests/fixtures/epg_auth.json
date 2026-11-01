@@ -1,0 +1,138 @@
+{
+  "cases": [
+    {
+      "covers": [
+        "epg-auth"
+      ],
+      "expected": {
+        "authenticator_hex": "AA4CF46E93CA54C72974E75AD3C1B8EE0C9C1D113D2E4AB6BFB0FCA73ABB336A1664E706FB57CE322CF6A6955573DC090737E2A98F5C430BD5467C8374AC1A172A8A5A31D8A711C40BFAC71E41A2EB46AB209B3B02A7E7000718F58F9A80570C"
+      },
+      "id": "epg-auth-known-answer",
+      "input": {
+        "custom_str": "$CTC",
+        "encrypt_token": "FIXTURE-ENCRYPT-TOKEN",
+        "ip_address": "192.0.2.10",
+        "mac": "02:00:00:00:00:01",
+        "password": "fixture-epg-password",
+        "random_value": 12345678,
+        "stb_id": "0102030405060708",
+        "user_id": "fixture-user"
+      }
+    },
+    {
+      "covers": [
+        "epg-auth"
+      ],
+      "expected": {
+        "authenticator_hex": "858B176DA8B125039EFEBEB29070DF44BDF30D331B9E10E160B0E740F7D90BFA5ABB712E8F9866EE79035A9D9D4539447EFB454092D0D955EF0535B9A4FD248FAE4A3BB4647F471590BF98D9D3FB8289420D77E3847722C8666BE492D6A14CC8"
+      },
+      "id": "epg-auth-key-pad-empty-password",
+      "input": {
+        "custom_str": "$CTC",
+        "encrypt_token": "FIXTURE-ENCRYPT-TOKEN",
+        "ip_address": "192.0.2.10",
+        "mac": "02:00:00:00:00:01",
+        "password": "",
+        "random_value": 12345678,
+        "stb_id": "0102030405060708",
+        "user_id": "fixture-user"
+      }
+    },
+    {
+      "covers": [
+        "epg-auth"
+      ],
+      "expected": {
+        "authenticator_hex": "96D0028878D58C8992B1FC9E1B2864305411845D4C8E614595C63CD3230FABABFC4BFF0A6DC56D48609E7DFDD796DC4CF8498892F148FB3577EBF52C0D9E22359DB4F1489CA4601009B81F11C7FB0BE11D4DC3B59A2BC33740F8FED5C1E2D2BE"
+      },
+      "id": "epg-auth-key-pad-8",
+      "input": {
+        "custom_str": "$CTC",
+        "encrypt_token": "FIXTURE-ENCRYPT-TOKEN",
+        "ip_address": "192.0.2.10",
+        "mac": "02:00:00:00:00:01",
+        "password": "12345678",
+        "random_value": 12345678,
+        "stb_id": "0102030405060708",
+        "user_id": "fixture-user"
+      }
+    },
+    {
+      "covers": [
+        "epg-auth"
+      ],
+      "expected": {
+        "authenticator_hex": "77E0D05692A6AEFDE0FA560882F578F8BF8CCDEE973CD998CE1DC43E42E28520A06C1981D15AB5032A1BE1B3F8E6410C061DC728ED5CAA08051C5A2567806312DAE52ACC637FA8261D024E8E5A8AC5F3F7714600E003933C21BD0E215353A512"
+      },
+      "id": "epg-auth-key-pad-24",
+      "input": {
+        "custom_str": "$CTC",
+        "encrypt_token": "FIXTURE-ENCRYPT-TOKEN",
+        "ip_address": "192.0.2.10",
+        "mac": "02:00:00:00:00:01",
+        "password": "fixture-password-24chars",
+        "random_value": 12345678,
+        "stb_id": "0102030405060708",
+        "user_id": "fixture-user"
+      }
+    },
+    {
+      "covers": [
+        "epg-auth"
+      ],
+      "expected": {
+        "authenticator_hex": "77E0D05692A6AEFDE0FA560882F578F8BF8CCDEE973CD998CE1DC43E42E28520A06C1981D15AB5032A1BE1B3F8E6410C061DC728ED5CAA08051C5A2567806312DAE52ACC637FA8261D024E8E5A8AC5F3F7714600E003933C21BD0E215353A512"
+      },
+      "id": "epg-auth-key-truncates-over-24",
+      "input": {
+        "custom_str": "$CTC",
+        "encrypt_token": "FIXTURE-ENCRYPT-TOKEN",
+        "ip_address": "192.0.2.10",
+        "mac": "02:00:00:00:00:01",
+        "password": "fixture-password-24chars-overlong",
+        "random_value": 12345678,
+        "stb_id": "0102030405060708",
+        "user_id": "fixture-user"
+      }
+    },
+    {
+      "covers": [
+        "epg-auth"
+      ],
+      "expected": {
+        "authenticator_hex": "B2E04076F06755665702BE4CC8C4C778A76D75A629EE1AD8A847B501256590B9437311059379EA28D65F4B5BF99AD737C7F85F1B0F6B7C0B46ECBE53AD3879B440DF3367B716F429B3CBFCD1DA3C3C4A41065A2E9973E51E"
+      },
+      "id": "epg-auth-random-zero",
+      "input": {
+        "custom_str": "$CTC",
+        "encrypt_token": "FIXTURE-ENCRYPT-TOKEN",
+        "ip_address": "192.0.2.10",
+        "mac": "02:00:00:00:00:01",
+        "password": "fixture-epg-password",
+        "random_value": 0,
+        "stb_id": "0102030405060708",
+        "user_id": "fixture-user"
+      }
+    },
+    {
+      "covers": [
+        "epg-auth"
+      ],
+      "expected": {
+        "authenticator_hex": "04272F8C2920D3672974E75AD3C1B8EE0C9C1D113D2E4AB6BFB0FCA73ABB336A1664E706FB57CE322CF6A6955573DC090737E2A98F5C430BD5467C8374AC1A172A8A5A31D8A711C40BFAC71E41A2EB46AB209B3B02A7E7000718F58F9A80570C"
+      },
+      "id": "epg-auth-random-boundary",
+      "input": {
+        "custom_str": "$CTC",
+        "encrypt_token": "FIXTURE-ENCRYPT-TOKEN",
+        "ip_address": "192.0.2.10",
+        "mac": "02:00:00:00:00:01",
+        "password": "fixture-epg-password",
+        "random_value": 99999999,
+        "stb_id": "0102030405060708",
+        "user_id": "fixture-user"
+      }
+    }
+  ],
+  "family": "epg-auth"
+}
