@@ -14,12 +14,13 @@ use crate::epg::{
     BootChannel, EpgClient, EpgError, EpgErrorClass, EpgErrorStage, Programme, SessionBundle,
 };
 use crate::error::OperationCode;
+use crate::guide::cache::CacheError;
 use crate::guide::{CacheFingerprint, GuideCache, GuideWindow};
 use crate::health::{HealthState, SnapshotCounts};
 use crate::lifecycle::{CancellationSource, CancellationToken};
 use crate::snapshot::{LogoView, Snapshot, SnapshotStore};
 
-const MAX_WINDOW_ERRORS: usize = 32;
+const MAX_RETAINED_WINDOW_ERRORS: usize = 32;
 const MAX_WINDOW_CONCURRENCY: usize = 8;
 const BACKOFF_BASE: Duration = Duration::from_secs(60);
 const MAX_BACKOFF_EXPONENT: u32 = 31;
@@ -119,7 +120,7 @@ impl MetadataSource for EpgMetadataSource {
     ) -> BoxFuture<'_, Result<Arc<MetadataSession>, MetadataError>> {
         Box::pin(async move {
             let session = tokio::select! {
-                result = self.client.authenticate() => result.map_err(MetadataError::from)?,
+                result = self.client.authenticate_with_shutdown(cancellation.clone()) => result.map_err(MetadataError::from)?,
                 () = cancellation.cancelled() => return Err(MetadataError::Cancelled),
             };
             let generation = session.generation();
@@ -384,6 +385,9 @@ impl RefreshEngine {
             .as_ref()
             .map(|snapshot| snapshot.programmes().to_vec());
         let outcomes = self.fetch_windows(session, channels.clone()).await;
+        if self.cancellation.is_cancelled() {
+            return Err(MetadataError::Cancelled);
+        }
         let valid = outcomes
             .iter()
             .filter_map(|outcome| outcome.programmes.as_ref())
@@ -414,18 +418,22 @@ impl RefreshEngine {
         .map_err(|_| MetadataError::Business)?;
         let persistence_failed =
             if let (Some(cache), Some(fingerprint)) = (&self.cache, &self.cache_fingerprint) {
-                matches!(
-                    cache.save(
-                        snapshot.programmes(),
-                        self.clock.utc().timestamp_millis(),
-                        fingerprint,
-                        &self.cancellation,
-                    ),
-                    Err(_error)
-                )
+                match cache.save(
+                    snapshot.programmes(),
+                    self.clock.utc().timestamp_millis(),
+                    fingerprint,
+                    &self.cancellation,
+                ) {
+                    Ok(()) => false,
+                    Err(CacheError::Cancelled) => return Err(MetadataError::Cancelled),
+                    Err(_) => true,
+                }
             } else {
                 false
             };
+        if self.cancellation.is_cancelled() {
+            return Err(MetadataError::Cancelled);
+        }
         self.store
             .publish(Arc::clone(&snapshot))
             .map_err(|_| MetadataError::Business)?;
@@ -476,20 +484,43 @@ impl RefreshEngine {
         let mut set = JoinSet::new();
         for channel in channels {
             for window in &self.windows {
-                let Ok(permit) = Arc::clone(&semaphore).acquire_owned().await else {
-                    return Vec::new();
-                };
+                let semaphore = Arc::clone(&semaphore);
                 let source = Arc::clone(&self.source);
                 let session = Arc::clone(&session);
                 let cancellation = self.cancellation.clone();
                 let window = *window;
                 let channel = channel.clone();
                 set.spawn(async move {
-                    let _permit = permit;
+                    let Ok(_permit) = semaphore.acquire_owned().await else {
+                        return WindowOutcome::from_result(
+                            window,
+                            channel.channel_id,
+                            Err(MetadataError::Cancelled),
+                        );
+                    };
                     let channel_id = channel.channel_id.clone();
+                    let replay_channel = channel.clone();
                     let result = source
-                        .programmes(session, channel, window, cancellation)
+                        .programmes(session, channel, window, cancellation.clone())
                         .await;
+                    let result = match result {
+                        Err(MetadataError::SessionExpired) => {
+                            match source.authenticate(cancellation.clone()).await {
+                                Ok(replay_session) => {
+                                    source
+                                        .programmes(
+                                            replay_session,
+                                            replay_channel,
+                                            window,
+                                            cancellation,
+                                        )
+                                        .await
+                                }
+                                Err(error) => Err(error),
+                            }
+                        }
+                        result => result,
+                    };
                     WindowOutcome::from_result(window, channel_id, result)
                 });
             }
@@ -499,8 +530,14 @@ impl RefreshEngine {
             if let Ok(outcome) = joined {
                 outcomes.push(outcome);
             }
-            if outcomes.len() >= MAX_WINDOW_ERRORS.saturating_add(self.windows.len()) {
-                break;
+        }
+        let mut retained_errors = 0_usize;
+        for outcome in &mut outcomes {
+            if outcome.error.is_some() {
+                retained_errors = retained_errors.saturating_add(1);
+                if retained_errors > MAX_RETAINED_WINDOW_ERRORS {
+                    outcome.error = None;
+                }
             }
         }
         outcomes
@@ -521,10 +558,15 @@ impl RefreshEngine {
     pub async fn run(mut self) {
         loop {
             let published = (self.refresh_once().await).is_ok();
+            let completion = self.clock.monotonic();
             let delay = self.next_delay(published);
+            let deadline = completion
+                .checked_add(delay)
+                .unwrap_or_else(|| self.clock.monotonic());
+            let remaining = deadline.saturating_duration_since(self.clock.monotonic());
             tokio::select! {
                 () = self.cancellation.cancelled() => return,
-                () = self.sleeper.sleep(delay) => {},
+                () = self.sleeper.sleep(remaining) => {},
             }
         }
     }
@@ -593,6 +635,7 @@ struct WindowOutcome {
     channel_id: String,
     window: GuideWindow,
     programmes: Option<Vec<Programme>>,
+    error: Option<MetadataError>,
 }
 
 impl WindowOutcome {
@@ -601,10 +644,15 @@ impl WindowOutcome {
         channel_id: String,
         result: Result<Vec<Programme>, MetadataError>,
     ) -> Self {
+        let (programmes, error) = match result {
+            Ok(programmes) => (Some(programmes), None),
+            Err(error) => (None, Some(error)),
+        };
         Self {
             channel_id,
             window,
-            programmes: result.ok(),
+            programmes,
+            error,
         }
     }
 }
@@ -664,5 +712,9 @@ impl crate::guide::cache::Cancellation for CancellationToken {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "refresh fixtures use explicit construction failures"
+)]
 #[path = "refresh_tests.rs"]
 mod tests;
