@@ -207,3 +207,27 @@ fn channel_and_programme_json_parsers_use_provider_status_boundaries() {
         (1, 2)
     );
 }
+
+#[test]
+fn numeric_entities_preserve_semicolonless_boundaries_and_overflow_like_python() {
+    let cases = [
+        (
+            r#"x ChannelID="c1" ChannelName="&#38 text" UserChannelID="7" TimeShiftURL="t1""#,
+            "& text",
+        ),
+        (
+            r#"x ChannelID="c1" ChannelName="&#38X" UserChannelID="7" TimeShiftURL="t1""#,
+            "&X",
+        ),
+        (
+            r#"x ChannelID="c1" ChannelName="&#999999999999999999999;" UserChannelID="7" TimeShiftURL="t1""#,
+            "\u{FFFD}",
+        ),
+    ];
+    for (body, expected_name) in cases {
+        assert_eq!(
+            parse_boot_channels(body).expect("valid entity record")[0].name,
+            expected_name
+        );
+    }
+}

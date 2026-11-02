@@ -130,10 +130,10 @@ fn numeric_entity(value: &str) -> Option<(usize, char)> {
     if digit_count == 0 {
         return None;
     }
-    let number = u32::from_str_radix(&digits[..digit_count], radix).ok()?;
+    let number = u32::from_str_radix(&digits[..digit_count], radix).ok();
     let replacement = match number {
-        0 | 0xD800..=0xDFFF | 0x0011_0000..=u32::MAX => '\u{FFFD}',
-        0x80..=0x9F => char::from_u32(
+        None | Some(0 | 0xD800..=0xDFFF | 0x0011_0000..=u32::MAX) => '\u{FFFD}',
+        Some(number @ 0x80..=0x9F) => char::from_u32(
             [
                 0x20AC, 0x81, 0x201A, 0x192, 0x201E, 0x2026, 0x2020, 0x2021, 0x2C6, 0x2030, 0x160,
                 0x2039, 0x152, 0x8D, 0x17D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022,
@@ -141,10 +141,11 @@ fn numeric_entity(value: &str) -> Option<(usize, char)> {
             ][usize::try_from(number - 0x80).ok()?],
         )
         .map_or('\u{FFFD}', |character| character),
-        _ => char::from_u32(number).map_or('\u{FFFD}', |character| character),
+        Some(number) => char::from_u32(number).map_or('\u{FFFD}', |character| character),
     };
+    let has_semicolon = digits.as_bytes().get(digit_count) == Some(&b';');
     Some((
-        1 + if radix == 16 { 2 } else { 1 } + digit_count,
+        if radix == 16 { 2 } else { 1 } + digit_count + usize::from(has_semicolon),
         replacement,
     ))
 }
