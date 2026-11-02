@@ -189,12 +189,46 @@ impl HealthState {
         snapshot.lease_expires_at = Some(lease_expires_at);
     }
 
-    /// Records a failed refresh while retaining the last successful snapshot.
-    pub async fn record_refresh_failure(&self, code: OperationCode) {
+    /// Records a publishable partial cycle while retaining stale status and failed-window count.
+    pub async fn record_refresh_partial(
+        &self,
+        refreshed_at: u64,
+        lease_expires_at: u64,
+        counts: SnapshotCounts,
+        failed_windows: u64,
+    ) {
         let mut snapshot = self.snapshot.write().await;
         snapshot.status = HealthStatus::Ok;
         snapshot.ready = true;
         snapshot.stale = true;
+        snapshot.channels = counts.channels;
+        snapshot.programmes = counts.programmes;
+        snapshot.refreshed_at = Some(refreshed_at);
+        snapshot.last_refresh_error = Some(OperationCode::Refresh);
+        snapshot.failed_windows = failed_windows;
+        snapshot.lease_expires_at = Some(lease_expires_at);
+    }
+
+    /// Records a failed refresh while retaining the last successful snapshot.
+    pub async fn record_refresh_failure(&self, code: OperationCode) {
+        self.record_refresh_failure_with_snapshot(code, true).await;
+    }
+
+    /// Records a refresh failure without making a cold service ready.
+    pub async fn record_refresh_failure_with_snapshot(
+        &self,
+        code: OperationCode,
+        has_snapshot: bool,
+    ) {
+        let mut snapshot = self.snapshot.write().await;
+        if has_snapshot {
+            snapshot.status = HealthStatus::Ok;
+            snapshot.ready = true;
+            snapshot.stale = true;
+        } else {
+            snapshot.status = HealthStatus::Starting;
+            snapshot.ready = false;
+        }
         snapshot.last_refresh_error = Some(code);
         snapshot.failed_windows = snapshot.failed_windows.saturating_add(1);
     }

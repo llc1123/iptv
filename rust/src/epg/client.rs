@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Write;
 use std::net::IpAddr;
@@ -14,6 +15,23 @@ use crate::crypto::epg_auth::{AuthenticatorInput, identity_encode, make_authenti
 use super::request::send_with_client_retry;
 use super::session::AuthCoordinator;
 use super::session::SessionBundle;
+use super::{
+    ChannelGroupSource, merge_category_groups, parse_boot_channels, parse_channel_list,
+    parse_programmes,
+};
+
+const CHANNELS_PATH: &str = "/EPG/jsp/getchannellistHWCU.jsp";
+const CHANNEL_AJAX_PATH: &str = "/EPG/jsp/jkjiaoyutest/en/function/ajax/epg7getChannelByAjax.jsp";
+const LIVE_CATEGORY_ID: &str = "10000100000000090000000000001692";
+const GROUP_CATEGORIES: [(&str, &str); 7] = [
+    ("catauto5122", "4K超高清"),
+    ("catauto2625", "央视"),
+    ("10000100000000090000000000001691", "本地"),
+    ("10000100000000090000000000001689", "卫视"),
+    ("catauto2561", "新闻"),
+    ("10000100000000090000000000001690", "高清"),
+    ("10000100000000090000000000005665", "付费频道"),
+];
 
 const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; SkyworthBrowser) AppleWebKit/534.24 (KHTML, like Gecko) Safari/534.24 SkWebKit-SH-CU";
 const ACCEPT_LANGUAGE: &str = "zh-CN,en-US;q=0.9";
@@ -324,6 +342,196 @@ impl EpgClient {
     /// Returns the most recently committed generation.
     pub async fn current_session(&self) -> Option<Arc<SessionBundle>> {
         self.coordinator.current().await
+    }
+
+    /// Fetches boot channels, required codes, and optional category groups.
+    ///
+    /// # Errors
+    /// Returns a redacted request, status, parse, or provider error. Code failures are hard;
+    /// optional category failures are skipped to preserve provider compatibility.
+    pub async fn fetch_channels(
+        &self,
+        session: &SessionBundle,
+    ) -> Result<Vec<super::models::BootChannel>, EpgError> {
+        let path = session
+            .origin()
+            .join(CHANNELS_PATH)
+            .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::InvalidOrigin))?;
+        let form = [
+            ("conntype", "dhcp".to_owned()),
+            ("UserToken", session.user_token().to_owned()),
+            ("tempKey", session.temp_key().to_owned()),
+            ("stbid", "310019".to_owned()),
+            ("SupportHD", "1".to_owned()),
+            ("UserID", self.config.user_id.clone()),
+            ("Lang", "1".to_owned()),
+        ];
+        let response = send_with_client_retry(
+            session.control_client(),
+            |client| {
+                client
+                    .post(path.clone())
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body(encode_form(&form))
+            },
+            &super::session::TokioSleeper,
+            EpgErrorStage::Request,
+            Arc::clone(&self.control_permits),
+            self.config.pool_timeout,
+            self.config.write_timeout,
+        )
+        .await?;
+        ensure_status(&response, EpgErrorStage::Request, 1)?;
+        let body = response
+            .text()
+            .await
+            .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse))?;
+        let mut channels = parse_boot_channels(&body)
+            .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse))?;
+        let codes = self
+            .fetch_channel_category(session, LIVE_CATEGORY_ID)
+            .await?;
+        let mut groups = Vec::new();
+        for (category, title) in GROUP_CATEGORIES {
+            if let Ok(response) = self
+                .fetch_channel_category_response(session, category)
+                .await
+            {
+                groups.push(ChannelGroupSource {
+                    title: title.to_owned(),
+                    response: Ok(response),
+                });
+            }
+        }
+        let group_map = merge_category_groups(&groups);
+        for channel in &mut channels {
+            channel.code = codes.get(&channel.channel_id).cloned().unwrap_or_default();
+            channel.group_title = group_map
+                .get(&channel.channel_id)
+                .cloned()
+                .unwrap_or_else(|| "全部".to_owned());
+        }
+        Ok(channels)
+    }
+
+    /// Fetches one programme window through the shared authenticated control client.
+    ///
+    /// # Errors
+    /// Returns a redacted request, status, parse, or provider error. The provider's `051002`
+    /// empty-window response is returned as an empty vector.
+    pub async fn fetch_programmes(
+        &self,
+        session: &SessionBundle,
+        channel_id: &str,
+        channel_code: &str,
+        start_time_ms: i64,
+        end_time_ms: i64,
+    ) -> Result<Vec<super::models::Programme>, EpgError> {
+        let path = session
+            .origin()
+            .join(CHANNEL_AJAX_PATH)
+            .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::InvalidOrigin))?;
+        let form = [
+            ("action", "getChannelProg".to_owned()),
+            ("code", channel_code.to_owned()),
+            ("channelID", channel_id.to_owned()),
+            ("endTime", end_time_ms.to_string()),
+            ("startTime", start_time_ms.to_string()),
+            ("offset", "0".to_owned()),
+            ("limit", "2000".to_owned()),
+        ];
+        let response = send_with_client_retry(
+            session.control_client(),
+            |client| {
+                client
+                    .post(path.clone())
+                    .header("VIS-AJAX", "AjaxHttpRequest")
+                    .header("Accept", "*/*")
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body(encode_form(&form))
+            },
+            &super::session::TokioSleeper,
+            EpgErrorStage::Request,
+            Arc::clone(&self.control_permits),
+            self.config.pool_timeout,
+            self.config.write_timeout,
+        )
+        .await?;
+        ensure_status(&response, EpgErrorStage::Request, 1)?;
+        let body = response
+            .text()
+            .await
+            .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse))?;
+        parse_programmes(&body).map_err(|error| match error.kind {
+            super::programme_parser::ProgrammeParserErrorKind::ProviderStatus => {
+                EpgError::status(EpgErrorStage::Request, 0, 1)
+            }
+            super::programme_parser::ProgrammeParserErrorKind::InvalidJson => {
+                EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse)
+            }
+        })
+    }
+
+    async fn fetch_channel_category_response(
+        &self,
+        session: &SessionBundle,
+        category: &str,
+    ) -> Result<super::models::ChannelListResponse, EpgError> {
+        let path = session
+            .origin()
+            .join(CHANNEL_AJAX_PATH)
+            .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::InvalidOrigin))?;
+        let form = [
+            ("action", "getChannelList"),
+            ("cateID", category),
+            ("type", ""),
+        ];
+        let response = send_with_client_retry(
+            session.control_client(),
+            |client| {
+                client
+                    .post(path.clone())
+                    .header("VIS-AJAX", "AjaxHttpRequest")
+                    .header("Accept", "*/*")
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body(encode_form(&form))
+            },
+            &super::session::TokioSleeper,
+            EpgErrorStage::Request,
+            Arc::clone(&self.control_permits),
+            self.config.pool_timeout,
+            self.config.write_timeout,
+        )
+        .await?;
+        ensure_status(&response, EpgErrorStage::Request, 1)?;
+        let body = response
+            .text()
+            .await
+            .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse))?;
+        parse_channel_list(&body).map_err(|error| match error.kind {
+            super::channel_parser::ChannelParserErrorKind::ProviderStatus => {
+                EpgError::status(EpgErrorStage::Request, 0, 1)
+            }
+            super::channel_parser::ChannelParserErrorKind::InvalidJson => {
+                EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse)
+            }
+        })
+    }
+
+    async fn fetch_channel_category(
+        &self,
+        session: &SessionBundle,
+        category: &str,
+    ) -> Result<BTreeMap<String, String>, EpgError> {
+        let response = self
+            .fetch_channel_category_response(session, category)
+            .await?;
+        Ok(response
+            .data
+            .into_iter()
+            .filter(|channel| !channel.code.is_empty())
+            .map(|channel| (channel.epg_id, channel.code))
+            .collect())
     }
 
     #[expect(
