@@ -344,12 +344,33 @@ impl RefreshEngine {
                 return Err(error);
             }
         };
-        let channels = match self
+        let channel_result = self
             .source
             .channels(Arc::clone(&session), self.cancellation.clone())
-            .await
-        {
-            Ok(channels) => channels,
+            .await;
+        let (session, channels) = match channel_result {
+            Ok(channels) => (session, channels),
+            Err(MetadataError::SessionExpired) => {
+                let session = match self.source.authenticate(self.cancellation.clone()).await {
+                    Ok(session) => session,
+                    Err(error) => {
+                        self.record_cycle_failure().await;
+                        return Err(error);
+                    }
+                };
+                let channels = match self
+                    .source
+                    .channels(Arc::clone(&session), self.cancellation.clone())
+                    .await
+                {
+                    Ok(channels) => channels,
+                    Err(error) => {
+                        self.record_cycle_failure().await;
+                        return Err(error);
+                    }
+                };
+                (session, channels)
+            }
             Err(error) => {
                 self.record_cycle_failure().await;
                 return Err(error);
