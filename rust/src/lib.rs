@@ -4,6 +4,7 @@
 pub mod config;
 pub mod crypto;
 pub mod dhcp;
+pub mod epg;
 pub mod error;
 pub mod health;
 pub mod lifecycle;
