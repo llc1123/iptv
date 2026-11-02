@@ -112,28 +112,20 @@ pub enum SetupStage {
 pub trait Platform {
     /// Checks both capabilities before any packet or mutation.
     fn preflight(&mut self) -> Result<(), LinuxError>;
-    /// Sends one frame and receives one bounded reply.
-    fn exchange(&mut self, frame: &[u8], timeout: Duration) -> Result<Vec<u8>, LinuxError>;
     /// Sends one frame and receives one bounded reply with an injected clock.
     fn exchange_with_clock(
         &mut self,
         frame: &[u8],
         timeout: Duration,
         _clock: &dyn Clock,
-    ) -> Result<Vec<u8>, LinuxError> {
-        self.exchange(frame, timeout)
-    }
-    /// Runs one already-tokenized command without a shell.
-    fn run_command(&mut self, argv: &[String], timeout: Duration) -> Result<(), LinuxError>;
+    ) -> Result<Vec<u8>, LinuxError>;
     /// Runs one command with the caller's clock for deadline and sleep control.
     fn run_command_with_clock(
         &mut self,
         argv: &[String],
         timeout: Duration,
         _clock: &dyn Clock,
-    ) -> Result<(), LinuxError> {
-        self.run_command(argv, timeout)
-    }
+    ) -> Result<(), LinuxError>;
 }
 
 /// Configuration for one DHCP transaction.
@@ -450,10 +442,6 @@ impl Platform for LinuxPlatform {
         Ok(())
     }
 
-    fn exchange(&mut self, frame: &[u8], timeout: Duration) -> Result<Vec<u8>, LinuxError> {
-        self.exchange_with_clock(frame, timeout, &SystemClock::default())
-    }
-
     fn exchange_with_clock(
         &mut self,
         frame: &[u8],
@@ -464,10 +452,6 @@ impl Platform for LinuxPlatform {
         let socket = RawPacketSocket::open(index)?;
         socket.send(frame, index)?;
         socket.receive(timeout, clock)
-    }
-
-    fn run_command(&mut self, argv: &[String], timeout: Duration) -> Result<(), LinuxError> {
-        run_ip_command(argv, timeout, &SystemClock::default())
     }
 
     fn run_command_with_clock(
@@ -632,7 +616,7 @@ fn run_ip_command(argv: &[String], timeout: Duration, clock: &dyn Clock) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
 
     use super::*;
 
@@ -640,11 +624,11 @@ mod tests {
     struct MockPlatform {
         preflight_error: Option<LinuxError>,
         exchange_result: Option<Result<Vec<u8>, LinuxError>>,
-        exchange_timeouts: Vec<Duration>,
         exchange_clock_calls: usize,
         command_results: Vec<Result<(), LinuxError>>,
         commands: Vec<Vec<String>>,
         command_timeouts: Vec<Duration>,
+        command_clock_calls: usize,
     }
 
     impl Platform for MockPlatform {
@@ -652,25 +636,27 @@ mod tests {
             self.preflight_error.take().map_or(Ok(()), Err)
         }
 
-        fn exchange(&mut self, _frame: &[u8], timeout: Duration) -> Result<Vec<u8>, LinuxError> {
-            self.exchange_timeouts.push(timeout);
+        fn exchange_with_clock(
+            &mut self,
+            _frame: &[u8],
+            _timeout: Duration,
+            clock: &dyn Clock,
+        ) -> Result<Vec<u8>, LinuxError> {
+            let _ = clock.now();
+            self.exchange_clock_calls += 1;
             self.exchange_result
                 .take()
                 .map_or(Err(LinuxError::Io), |result| result)
         }
 
-        fn exchange_with_clock(
+        fn run_command_with_clock(
             &mut self,
-            frame: &[u8],
+            argv: &[String],
             timeout: Duration,
             clock: &dyn Clock,
-        ) -> Result<Vec<u8>, LinuxError> {
+        ) -> Result<(), LinuxError> {
             let _ = clock.now();
-            self.exchange_clock_calls += 1;
-            self.exchange(frame, timeout)
-        }
-
-        fn run_command(&mut self, argv: &[String], timeout: Duration) -> Result<(), LinuxError> {
+            self.command_clock_calls += 1;
             self.commands.push(argv.to_vec());
             self.command_timeouts.push(timeout);
             if self.command_results.is_empty() {
@@ -688,6 +674,7 @@ mod tests {
     #[derive(Debug)]
     struct FakeClock {
         now: RefCell<Instant>,
+        now_calls: Cell<usize>,
         monotonic_ms: u64,
         sleeps: RefCell<Vec<Duration>>,
     }
@@ -696,6 +683,7 @@ mod tests {
         fn new(monotonic_ms: u64) -> Self {
             Self {
                 now: RefCell::new(Instant::now()),
+                now_calls: Cell::new(0),
                 monotonic_ms,
                 sleeps: RefCell::new(Vec::new()),
             }
@@ -704,6 +692,7 @@ mod tests {
 
     impl Clock for FakeClock {
         fn now(&self) -> Instant {
+            self.now_calls.set(self.now_calls.get().saturating_add(1));
             *self.now.borrow()
         }
 
@@ -863,6 +852,20 @@ mod tests {
                 ..
             })
         ));
+        assert_eq!(setup.command_clock_calls, 2);
+    }
+
+    #[test]
+    fn interface_configuration_uses_injected_clock_for_every_command() {
+        let clock = FakeClock::new(0);
+        let mut platform = MockPlatform::default();
+
+        let result = configure_interface_with_clock(&mut platform, "eth0", &lease(), &[], &clock);
+
+        assert!(matches!(result, Ok(LifecycleResult::Applied(_))));
+        assert_eq!(platform.command_clock_calls, 3);
+        assert_eq!(clock.now_calls.get(), 3);
+        assert!(clock.sleeps.borrow().is_empty());
     }
 
     #[test]
@@ -905,10 +908,13 @@ mod tests {
                 "-c".to_owned(),
                 "while :; do :; done".to_owned(),
             ],
-            Duration::ZERO,
+            Duration::from_millis(20),
             &clock,
         );
         assert_eq!(result, Err(LinuxError::Timeout));
-        assert!(clock.sleeps.borrow().is_empty());
+        assert_eq!(
+            *clock.sleeps.borrow(),
+            vec![COMMAND_POLL_INTERVAL, COMMAND_POLL_INTERVAL]
+        );
     }
 }
