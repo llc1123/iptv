@@ -9,7 +9,10 @@ use std::time::Instant;
 use thiserror::Error;
 
 pub use lease::{DhcpLease, LeaseError};
-pub use linux::{DhcpClient, LinuxError, Platform, SetupError, SetupStage, configure_interface};
+pub use linux::{
+    Clock, DhcpClient, LinuxError, Platform, SetupError, SetupStage, SystemClock,
+    configure_interface, configure_interface_with_clock,
+};
 pub use packet::{DhcpReply, MacAddress, PacketError, ReplyKind};
 
 /// Failures from the DHCP acquisition boundary.

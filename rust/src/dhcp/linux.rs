@@ -7,11 +7,11 @@
 #![allow(clippy::missing_errors_doc)]
 
 use std::ffi::CString;
+use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::net::Ipv4Addr;
 use std::process::{Command, Stdio};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
@@ -23,6 +23,49 @@ use crate::crypto::ctc_option60::{self, Option60Input};
 
 /// Every DHCP and `ip` stage has this upper bound.
 pub const STAGE_TIMEOUT: Duration = Duration::from_secs(10);
+
+const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// Provides monotonic timing and sleeping for DHCP operations.
+pub trait Clock {
+    /// Returns the current monotonic instant.
+    fn now(&self) -> Instant;
+    /// Returns the monotonic millisecond value used by Option 60.
+    fn monotonic_millis(&self) -> u64;
+    /// Suspends execution for one polling interval.
+    fn sleep(&self, duration: Duration);
+}
+
+/// The production clock backed by the system monotonic clock and thread sleep.
+#[derive(Debug)]
+pub struct SystemClock {
+    origin: Instant,
+}
+
+impl Default for SystemClock {
+    fn default() -> Self {
+        Self {
+            origin: Instant::now(),
+        }
+    }
+}
+
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn monotonic_millis(&self) -> u64 {
+        match u64::try_from(self.origin.elapsed().as_millis()) {
+            Ok(value) => value,
+            Err(_) => u64::MAX,
+        }
+    }
+
+    fn sleep(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
 
 /// The capability needed before a raw transmit or interface mutation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,12 +114,30 @@ pub trait Platform {
     fn preflight(&mut self) -> Result<(), LinuxError>;
     /// Sends one frame and receives one bounded reply.
     fn exchange(&mut self, frame: &[u8], timeout: Duration) -> Result<Vec<u8>, LinuxError>;
+    /// Sends one frame and receives one bounded reply with an injected clock.
+    fn exchange_with_clock(
+        &mut self,
+        frame: &[u8],
+        timeout: Duration,
+        _clock: &dyn Clock,
+    ) -> Result<Vec<u8>, LinuxError> {
+        self.exchange(frame, timeout)
+    }
     /// Runs one already-tokenized command without a shell.
     fn run_command(&mut self, argv: &[String], timeout: Duration) -> Result<(), LinuxError>;
+    /// Runs one command with the caller's clock for deadline and sleep control.
+    fn run_command_with_clock(
+        &mut self,
+        argv: &[String],
+        timeout: Duration,
+        _clock: &dyn Clock,
+    ) -> Result<(), LinuxError> {
+        self.run_command(argv, timeout)
+    }
 }
 
 /// Configuration for one DHCP transaction.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ClientConfig<'a> {
     /// Interface Ethernet address.
     pub mac: MacAddress,
@@ -88,34 +149,65 @@ pub struct ClientConfig<'a> {
     pub hostname: &'a [u8],
 }
 
-/// DHCP client over an injectable Linux platform.
-pub struct DhcpClient<'a, P> {
-    platform: P,
-    config: ClientConfig<'a>,
+impl fmt::Debug for ClientConfig<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClientConfig")
+            .field("mac", &self.mac)
+            .field("user", &"[REDACTED]")
+            .field("password", &"[REDACTED]")
+            .field("hostname", &self.hostname)
+            .finish()
+    }
 }
 
-impl<'a, P: Platform> DhcpClient<'a, P> {
+/// DHCP client over an injectable Linux platform.
+pub struct DhcpClient<'a, P, C = SystemClock> {
+    platform: P,
+    config: ClientConfig<'a>,
+    clock: C,
+}
+
+impl<'a, P: Platform> DhcpClient<'a, P, SystemClock> {
     /// Creates a client. The caller owns the platform boundary.
     #[must_use]
-    pub const fn new(platform: P, config: ClientConfig<'a>) -> Self {
-        Self { platform, config }
+    pub fn new(platform: P, config: ClientConfig<'a>) -> Self {
+        Self {
+            platform,
+            config,
+            clock: SystemClock::default(),
+        }
+    }
+}
+
+impl<'a, P: Platform, C: Clock> DhcpClient<'a, P, C> {
+    /// Creates a client with an injected clock.
+    #[must_use]
+    pub const fn new_with_clock(platform: P, config: ClientConfig<'a>, clock: C) -> Self {
+        Self {
+            platform,
+            config,
+            clock,
+        }
     }
 
     /// Acquires one lease without renewal.
     pub fn acquire(&mut self) -> Result<DhcpLease, DhcpError> {
         self.platform.preflight()?;
         let xid = random_u32().map_err(|_| LinuxError::Io)?;
-        let discover_option60 = option60(self.config.user, self.config.password)?;
+        let discover_option60 = option60(self.config.user, self.config.password, &self.clock)?;
         let discover = packet::build_discover(
             self.config.mac,
             xid,
             &discover_option60,
             self.config.hostname,
         )?;
-        let offer_frame = self.platform.exchange(&discover, STAGE_TIMEOUT)?;
+        let offer_frame =
+            self.platform
+                .exchange_with_clock(&discover, STAGE_TIMEOUT, &self.clock)?;
         let offer = packet::decode_reply(&offer_frame, xid, self.config.mac, ReplyKind::Offer)?;
         let server = offer.source;
-        let request_option60 = option60(self.config.user, self.config.password)?;
+        let request_option60 = option60(self.config.user, self.config.password, &self.clock)?;
         let request = packet::build_request(
             self.config.mac,
             xid,
@@ -124,9 +216,11 @@ impl<'a, P: Platform> DhcpClient<'a, P> {
             &request_option60,
             self.config.hostname,
         )?;
-        let ack_frame = self.platform.exchange(&request, STAGE_TIMEOUT)?;
+        let ack_frame = self
+            .platform
+            .exchange_with_clock(&request, STAGE_TIMEOUT, &self.clock)?;
         let ack = packet::decode_reply(&ack_frame, xid, self.config.mac, ReplyKind::Ack)?;
-        lease::from_ack(ack, Instant::now()).map_err(DhcpError::from)
+        lease::from_ack(ack, self.clock.now()).map_err(DhcpError::from)
     }
 }
 
@@ -137,6 +231,17 @@ pub fn configure_interface<P: Platform>(
     lease: &DhcpLease,
     routes: &[String],
 ) -> Result<LifecycleResult, SetupError> {
+    configure_interface_with_clock(platform, interface, lease, routes, &SystemClock::default())
+}
+
+/// Applies address and route mutations with an injected clock.
+pub fn configure_interface_with_clock<P: Platform, C: Clock>(
+    platform: &mut P,
+    interface: &str,
+    lease: &DhcpLease,
+    routes: &[String],
+    clock: &C,
+) -> Result<LifecycleResult, SetupError> {
     platform.preflight().map_err(SetupError::Platform)?;
     let commands = route_commands(interface, lease, routes).map_err(SetupError::Platform)?;
     let mut applied = false;
@@ -146,7 +251,7 @@ pub fn configure_interface<P: Platform>(
         } else {
             SetupStage::Route
         };
-        match platform.run_command(command, STAGE_TIMEOUT) {
+        match platform.run_command_with_clock(command, STAGE_TIMEOUT, clock) {
             Ok(()) => applied = true,
             Err(_error) if applied => {
                 return Ok(LifecycleResult::Preserved {
@@ -287,9 +392,9 @@ fn random_u32() -> io::Result<u32> {
     Ok(u32::from_ne_bytes(bytes))
 }
 
-fn option60(user: &str, password: &str) -> Result<Vec<u8>, DhcpError> {
+fn option60(user: &str, password: &str, clock: &dyn Clock) -> Result<Vec<u8>, DhcpError> {
     let random = (u64::from(random_u32().map_err(|_| LinuxError::Io)?) & 0x7fff_ffff).to_le_bytes();
-    let timestamp = monotonic_millis().to_le_bytes();
+    let timestamp = clock.monotonic_millis().to_le_bytes();
     ctc_option60::encode(&Option60Input {
         password,
         login: user,
@@ -297,15 +402,6 @@ fn option60(user: &str, password: &str) -> Result<Vec<u8>, DhcpError> {
         monotonic_ms: timestamp,
     })
     .map_err(DhcpError::from)
-}
-
-fn monotonic_millis() -> u64 {
-    static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-    let elapsed = BASE.get_or_init(Instant::now).elapsed();
-    match u64::try_from(elapsed.as_millis()) {
-        Ok(value) => value,
-        Err(_) => u64::MAX,
-    }
 }
 
 /// The real Linux platform implementation.
@@ -355,14 +451,32 @@ impl Platform for LinuxPlatform {
     }
 
     fn exchange(&mut self, frame: &[u8], timeout: Duration) -> Result<Vec<u8>, LinuxError> {
+        self.exchange_with_clock(frame, timeout, &SystemClock::default())
+    }
+
+    fn exchange_with_clock(
+        &mut self,
+        frame: &[u8],
+        timeout: Duration,
+        clock: &dyn Clock,
+    ) -> Result<Vec<u8>, LinuxError> {
         let index = interface_index(&self.interface)?;
         let socket = RawPacketSocket::open(index)?;
         socket.send(frame, index)?;
-        socket.receive(timeout)
+        socket.receive(timeout, clock)
     }
 
     fn run_command(&mut self, argv: &[String], timeout: Duration) -> Result<(), LinuxError> {
-        run_ip_command(argv, timeout)
+        run_ip_command(argv, timeout, &SystemClock::default())
+    }
+
+    fn run_command_with_clock(
+        &mut self,
+        argv: &[String],
+        timeout: Duration,
+        clock: &dyn Clock,
+    ) -> Result<(), LinuxError> {
+        run_ip_command(argv, timeout, clock)
     }
 }
 
@@ -451,8 +565,13 @@ impl RawPacketSocket {
         Ok(())
     }
 
-    fn receive(&self, timeout: Duration) -> Result<Vec<u8>, LinuxError> {
-        let millis = i32::try_from(timeout.as_millis()).map_err(|_| LinuxError::Timeout)?;
+    fn receive(&self, timeout: Duration, clock: &dyn Clock) -> Result<Vec<u8>, LinuxError> {
+        let deadline = clock
+            .now()
+            .checked_add(timeout)
+            .ok_or(LinuxError::Timeout)?;
+        let remaining = deadline.saturating_duration_since(clock.now());
+        let millis = i32::try_from(remaining.as_millis()).map_err(|_| LinuxError::Timeout)?;
         let mut poll = libc::pollfd {
             fd: self.fd,
             events: libc::POLLIN,
@@ -485,7 +604,7 @@ impl Drop for RawPacketSocket {
     }
 }
 
-fn run_ip_command(argv: &[String], timeout: Duration) -> Result<(), LinuxError> {
+fn run_ip_command(argv: &[String], timeout: Duration, clock: &dyn Clock) -> Result<(), LinuxError> {
     let executable = argv.first().ok_or(LinuxError::CommandFailed)?;
     let mut child = Command::new(executable)
         .args(&argv[1..])
@@ -493,25 +612,28 @@ fn run_ip_command(argv: &[String], timeout: Duration) -> Result<(), LinuxError> 
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| LinuxError::Io)?;
-    let deadline = Instant::now()
+    let deadline = clock
+        .now()
         .checked_add(timeout)
         .ok_or(LinuxError::Timeout)?;
     loop {
         match child.try_wait().map_err(|_| LinuxError::Io)? {
             Some(status) if status.success() => return Ok(()),
             Some(_) => return Err(LinuxError::CommandFailed),
-            None if Instant::now() >= deadline => {
+            None if clock.now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(LinuxError::Timeout);
             }
-            None => thread::sleep(Duration::from_millis(10)),
+            None => clock.sleep(COMMAND_POLL_INTERVAL),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
 
     #[derive(Default)]
@@ -519,8 +641,10 @@ mod tests {
         preflight_error: Option<LinuxError>,
         exchange_result: Option<Result<Vec<u8>, LinuxError>>,
         exchange_timeouts: Vec<Duration>,
+        exchange_clock_calls: usize,
         command_results: Vec<Result<(), LinuxError>>,
         commands: Vec<Vec<String>>,
+        command_timeouts: Vec<Duration>,
     }
 
     impl Platform for MockPlatform {
@@ -535,8 +659,20 @@ mod tests {
                 .map_or(Err(LinuxError::Io), |result| result)
         }
 
-        fn run_command(&mut self, argv: &[String], _timeout: Duration) -> Result<(), LinuxError> {
+        fn exchange_with_clock(
+            &mut self,
+            frame: &[u8],
+            timeout: Duration,
+            clock: &dyn Clock,
+        ) -> Result<Vec<u8>, LinuxError> {
+            let _ = clock.now();
+            self.exchange_clock_calls += 1;
+            self.exchange(frame, timeout)
+        }
+
+        fn run_command(&mut self, argv: &[String], timeout: Duration) -> Result<(), LinuxError> {
             self.commands.push(argv.to_vec());
+            self.command_timeouts.push(timeout);
             if self.command_results.is_empty() {
                 Ok(())
             } else {
@@ -547,6 +683,42 @@ mod tests {
 
     fn lease() -> DhcpLease {
         lease::test_lease()
+    }
+
+    #[derive(Debug)]
+    struct FakeClock {
+        now: RefCell<Instant>,
+        monotonic_ms: u64,
+        sleeps: RefCell<Vec<Duration>>,
+    }
+
+    impl FakeClock {
+        fn new(monotonic_ms: u64) -> Self {
+            Self {
+                now: RefCell::new(Instant::now()),
+                monotonic_ms,
+                sleeps: RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Clock for FakeClock {
+        fn now(&self) -> Instant {
+            *self.now.borrow()
+        }
+
+        fn monotonic_millis(&self) -> u64 {
+            self.monotonic_ms
+        }
+
+        fn sleep(&self, duration: Duration) {
+            self.sleeps.borrow_mut().push(duration);
+            let next = self
+                .now()
+                .checked_add(duration)
+                .unwrap_or_else(|| self.now());
+            *self.now.borrow_mut() = next;
+        }
     }
 
     #[test]
@@ -662,7 +834,7 @@ mod tests {
 
     #[test]
     fn stage_timeout_is_injected_and_post_mutation_state_is_preserved() {
-        let mut client = DhcpClient::new(
+        let mut client = DhcpClient::new_with_clock(
             MockPlatform {
                 exchange_result: Some(Err(LinuxError::Timeout)),
                 ..MockPlatform::default()
@@ -673,9 +845,11 @@ mod tests {
                 password: "password",
                 hostname: b"STB",
             },
+            FakeClock::new(0x0102_0304),
         );
         let result = client.acquire();
         assert_eq!(result, Err(DhcpError::Platform(LinuxError::Timeout)));
+        assert_eq!(client.platform.exchange_clock_calls, 1);
         let mut setup = MockPlatform {
             command_results: vec![Ok(()), Err(LinuxError::CommandFailed)],
             ..MockPlatform::default()
@@ -696,5 +870,45 @@ mod tests {
         let error = DhcpError::Platform(LinuxError::Io).to_string();
         assert!(!error.contains("password"));
         assert!(!error.contains("user"));
+    }
+
+    #[test]
+    fn option60_uses_injected_monotonic_timestamp() {
+        let clock = FakeClock::new(0x0102_0304_0506_0708);
+        let wire = option60("user", "password", &clock).unwrap_or_default();
+        assert_eq!(&wire[13..21], &clock.monotonic_ms.to_le_bytes());
+    }
+
+    #[test]
+    fn client_config_debug_redacts_credentials_and_keeps_safe_metadata() {
+        let rendered = format!(
+            "{:?}",
+            ClientConfig {
+                mac: MacAddress::new([2, 0, 0, 0, 0, 1]),
+                user: "fixture-user-secret",
+                password: "fixture-password-secret",
+                hostname: b"STB",
+            }
+        );
+        assert!(!rendered.contains("fixture-user-secret"));
+        assert!(!rendered.contains("fixture-password-secret"));
+        assert!(rendered.contains("mac"));
+        assert!(rendered.contains("REDACTED"));
+    }
+
+    #[test]
+    fn command_deadline_uses_injected_clock() {
+        let clock = FakeClock::new(0);
+        let result = run_ip_command(
+            &[
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "while :; do :; done".to_owned(),
+            ],
+            Duration::ZERO,
+            &clock,
+        );
+        assert_eq!(result, Err(LinuxError::Timeout));
+        assert!(clock.sleeps.borrow().is_empty());
     }
 }
