@@ -18,6 +18,8 @@ const MAX_REDIRECTS: usize = 10;
 const HOST_SHARDS: usize = 64;
 const HOST_PERMITS: usize = 64;
 const PERMIT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Maximum body size accepted from an upstream HLS response.
+pub const MAX_RESPONSE_BODY_BYTES: u64 = 64 * 1024 * 1024;
 
 /// A boxed asynchronous resolver result.
 pub type ResolveFuture =
@@ -54,6 +56,8 @@ pub enum HlsPolicyError {
     Cancelled,
     /// Transport failed without retaining source details.
     Transport,
+    /// The upstream response body exceeds the fixed policy bound.
+    ResponseTooLarge,
 }
 impl std::fmt::Display for HlsPolicyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -112,6 +116,59 @@ pub struct HlsResponse {
 impl std::fmt::Debug for HlsResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("HlsResponse { response: [redacted], permit: held }")
+    }
+}
+
+/// Bounded upstream response body retained with its host permit.
+pub struct HlsBody {
+    response: reqwest::Response,
+    _permit: OwnedSemaphorePermit,
+    bytes_read: u64,
+}
+
+impl std::fmt::Debug for HlsBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HlsBody { response: [redacted], permit: held }")
+    }
+}
+
+impl HlsResponse {
+    /// Moves the response into a bounded reader for route-level streaming.
+    #[must_use]
+    pub fn into_body(self) -> HlsBody {
+        HlsBody {
+            response: self.response,
+            _permit: self.permit,
+            bytes_read: 0,
+        }
+    }
+}
+
+impl HlsBody {
+    /// Reads one bounded body chunk while retaining the host permit.
+    ///
+    /// # Errors
+    /// Returns a fixed error for transport failures or when the cumulative body exceeds the
+    /// policy bound.
+    pub async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, HlsPolicyError> {
+        let chunk = self
+            .response
+            .chunk()
+            .await
+            .map_err(|_| HlsPolicyError::Transport)?;
+        let Some(chunk) = chunk else {
+            return Ok(None);
+        };
+        let chunk_length =
+            u64::try_from(chunk.len()).map_err(|_| HlsPolicyError::ResponseTooLarge)?;
+        self.bytes_read = self
+            .bytes_read
+            .checked_add(chunk_length)
+            .ok_or(HlsPolicyError::ResponseTooLarge)?;
+        if self.bytes_read > MAX_RESPONSE_BODY_BYTES {
+            return Err(HlsPolicyError::ResponseTooLarge);
+        }
+        Ok(Some(chunk.to_vec()))
     }
 }
 
@@ -294,6 +351,7 @@ impl<R: Resolver + 'static> HlsPolicy<R> {
                 .await?;
             let response = tokio::select! { () = cancellation.cancelled() => return Err(HlsPolicyError::Cancelled), result = client.get(url.clone()).headers(headers.to_header_map()?).send() => result.map_err(|_| HlsPolicyError::Transport)? };
             if !response.status().is_redirection() {
+                validate_content_length(response.content_length())?;
                 return Ok(HlsResponse { response, permit });
             }
             let location = response
@@ -310,6 +368,18 @@ impl<R: Resolver + 'static> HlsPolicy<R> {
             url = next;
         }
         Err(HlsPolicyError::RedirectRejected)
+    }
+}
+
+/// Validates a known response body size before the response reaches a route.
+///
+/// # Errors
+/// Returns [`HlsPolicyError::ResponseTooLarge`] when the known size exceeds the policy bound.
+pub fn validate_content_length(content_length: Option<u64>) -> Result<(), HlsPolicyError> {
+    if content_length.is_some_and(|length| length > MAX_RESPONSE_BODY_BYTES) {
+        Err(HlsPolicyError::ResponseTooLarge)
+    } else {
+        Ok(())
     }
 }
 
@@ -517,5 +587,15 @@ mod tests {
         let safe = safe_response_headers(&upstream);
         assert!(safe.contains_key("content-type"));
         assert!(!safe.contains_key("server"));
+    }
+
+    #[test]
+    fn known_response_content_length_over_limit_is_rejected() {
+        assert_eq!(
+            validate_content_length(Some(MAX_RESPONSE_BODY_BYTES + 1)),
+            Err(HlsPolicyError::ResponseTooLarge)
+        );
+        assert!(validate_content_length(Some(MAX_RESPONSE_BODY_BYTES)).is_ok());
+        assert!(validate_content_length(None).is_ok());
     }
 }

@@ -10,6 +10,8 @@ const MAX_ENTRIES: usize = 500_000;
 const MAX_BYTES: usize = 256 * 1024 * 1024;
 const MAX_FIELD_BYTES: usize = 4096;
 const TOKEN_BYTES: usize = 24;
+const QUEUE_METADATA_MULTIPLE: usize = 4;
+const QUEUE_METADATA_HEADROOM: usize = 16;
 
 /// Monotonic time source used by the store.
 pub trait Clock: Send + Sync {
@@ -209,8 +211,16 @@ impl TokenStore {
         I: IntoIterator<Item = (U, String)>,
         U: Into<String>,
     {
+        let mut state = self.state.lock().map_err(|_| TokenStoreError::Capacity)?;
+        let now = self.clock.now();
+        prune(&mut state, now);
         let mut resources = Vec::new();
+        let mut unique_tokens = std::collections::HashSet::new();
+        let mut needed = 0_usize;
         for (url, suffix) in values {
+            if resources.len() >= MAX_ENTRIES {
+                return Err(TokenStoreError::Capacity);
+            }
             let url = url.into();
             validate_field(&url)?;
             validate_suffix(&suffix)?;
@@ -218,22 +228,24 @@ impl TokenStore {
             if token.len() != TOKEN_BYTES || !token.bytes().all(is_url_safe) {
                 return Err(TokenStoreError::Invalid);
             }
-            resources.push(Resource {
+            let resource = Resource {
                 token: format!("{token}{suffix}"),
                 url,
-            });
-        }
-        let mut state = self.state.lock().map_err(|_| TokenStoreError::Capacity)?;
-        let now = self.clock.now();
-        prune(&mut state, now);
-        let mut unique_tokens = std::collections::HashSet::with_capacity(resources.len());
-        if resources.iter().any(|resource| {
-            !unique_tokens.insert(resource.token.clone())
+            };
+            if !unique_tokens.insert(resource.token.clone())
                 || state.entries.contains_key(&resource.token)
-        }) {
-            return Err(TokenStoreError::Capacity);
+            {
+                return Err(TokenStoreError::Capacity);
+            }
+            let resource_charge = charge(&resource);
+            needed = needed
+                .checked_add(resource_charge)
+                .ok_or(TokenStoreError::Capacity)?;
+            if needed > MAX_BYTES {
+                return Err(TokenStoreError::Capacity);
+            }
+            resources.push(resource);
         }
-        let needed: usize = resources.iter().map(charge).sum();
         if needed > MAX_BYTES || resources.len() > MAX_ENTRIES {
             return Err(TokenStoreError::Capacity);
         }
@@ -272,14 +284,18 @@ impl TokenStore {
             .map_err(|_| TokenStoreError::Unavailable)?;
         let now = self.clock.now();
         prune(&mut state, now);
-        let entry = state
-            .entries
-            .get_mut(token)
-            .ok_or(TokenStoreError::Unavailable)?;
-        entry.expires_at = now + TTL;
-        let generation = entry.generation;
-        let url = entry.url.clone();
+        state.generation = state.generation.wrapping_add(1);
+        let generation = state.generation;
+        let url = match state.entries.get_mut(token) {
+            Some(entry) => {
+                entry.expires_at = now + TTL;
+                entry.generation = generation;
+                entry.url.clone()
+            }
+            None => return Err(TokenStoreError::Unavailable),
+        };
         state.queue.push_back((token.to_owned(), generation));
+        compact_queue(&mut state);
         Ok(Resource {
             token: token.to_owned(),
             url,
@@ -355,6 +371,24 @@ fn prune(state: &mut State, now: Duration) {
     }
 }
 
+fn compact_queue(state: &mut State) {
+    let limit = state
+        .entries
+        .len()
+        .saturating_mul(QUEUE_METADATA_MULTIPLE)
+        .saturating_add(QUEUE_METADATA_HEADROOM);
+    if state.queue.len() <= limit {
+        return;
+    }
+    let mut generations = state
+        .entries
+        .iter()
+        .map(|(token, entry)| (token.clone(), entry.generation))
+        .collect::<Vec<_>>();
+    generations.sort_unstable_by_key(|(_, generation)| *generation);
+    state.queue = generations.into_iter().collect();
+}
+
 fn evict_one(state: &mut State) -> bool {
     while let Some((token, generation)) = state.queue.pop_front() {
         let matches = state
@@ -427,6 +461,48 @@ mod tests {
             ("https://example.invalid/b", ".bad".to_owned()),
         ]);
         assert_eq!(result, Err(TokenStoreError::Invalid));
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn repeated_resolves_bound_queue_metadata_and_keep_fresh_token_live() {
+        let (clock, store) = store();
+        let resource = store.register("https://example.invalid/hot.ts", ".ts").ok();
+        let Some(resource) = resource else {
+            return;
+        };
+
+        for now in 1..=1_000 {
+            clock.0.store(now, Ordering::Relaxed);
+            assert!(store.resolve(&resource.token).is_ok());
+        }
+
+        {
+            let state = store.state.lock().ok();
+            assert!(state.as_ref().is_some_and(|state| {
+                state.queue.len()
+                    <= state
+                        .entries
+                        .len()
+                        .saturating_mul(QUEUE_METADATA_MULTIPLE)
+                        .saturating_add(QUEUE_METADATA_HEADROOM)
+            }));
+        }
+        assert_eq!(store.len(), 1);
+        assert!(store.resolve(&resource.token).is_ok());
+    }
+
+    #[test]
+    fn oversized_batch_stops_before_consuming_unbounded_input() {
+        let (_, store) = store();
+        let mut consumed = 0_usize;
+        let result = store.register_batch(std::iter::from_fn(|| {
+            consumed = consumed.saturating_add(1);
+            Some(("https://example.invalid/item.ts", ".ts".to_owned()))
+        }));
+
+        assert_eq!(result, Err(TokenStoreError::Capacity));
+        assert_eq!(consumed, MAX_ENTRIES + 1);
         assert!(store.is_empty());
     }
 }
