@@ -1,6 +1,6 @@
 //! Operator-compatible command-line and environment configuration.
 
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
 use clap::Parser;
 
@@ -29,8 +29,8 @@ impl Secret {
     }
 }
 
-impl std::fmt::Debug for Secret {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for Secret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("Secret([redacted])")
     }
 }
@@ -78,7 +78,7 @@ pub struct Config {
     pub shutdown_grace_seconds: u64,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Parser)]
 #[command(name = "iptv-media-server", version, about = "IPTV media server")]
 struct Arguments {
     #[arg(long, default_value = "eth0", env = "IPTV_INTERFACE")]
@@ -129,6 +129,33 @@ struct Arguments {
     routes: Vec<String>,
     #[arg(long, default_value_t = 60)]
     shutdown_grace_seconds: u64,
+}
+
+impl fmt::Debug for Arguments {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Arguments")
+            .field("interface", &self.interface)
+            .field("epg_mac", &self.epg_mac)
+            .field("stb_id", &self.stb_id)
+            .field("stb_id_prefix", &self.stb_id_prefix)
+            .field("dhcp_user", &"[REDACTED]")
+            .field("dhcp_password", &"[REDACTED]")
+            .field("epg_user", &"[REDACTED]")
+            .field("epg_password", &"[REDACTED]")
+            .field("authentication_url", &self.authentication_url)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("guide_past_days", &self.guide_past_days)
+            .field("guide_future_days", &self.guide_future_days)
+            .field("guide_timezone", &self.guide_timezone)
+            .field("guide_cache", &self.guide_cache)
+            .field("logo_catalog", &self.logo_catalog)
+            .field("refresh_interval_seconds", &self.refresh_interval_seconds)
+            .field("routes", &self.routes)
+            .field("shutdown_grace_seconds", &self.shutdown_grace_seconds)
+            .finish()
+    }
 }
 
 impl Config {
@@ -270,6 +297,25 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("metadata-converter-url"));
         assert!(!rendered.contains("secret-converter-value"));
+    }
+
+    #[test]
+    fn parsed_arguments_debug_redacts_all_credentials_and_keeps_safe_fields() {
+        let arguments = valid_arguments();
+        let rendered = format!("{arguments:?}");
+
+        for secret in ["dhcp-user", "dhcp-password", "epg-user", "epg-password"] {
+            assert!(!rendered.contains(secret));
+        }
+        assert!(rendered.contains("dhcp_user"));
+        assert!(rendered.contains("dhcp_password"));
+        assert!(rendered.contains("epg_user"));
+        assert!(rendered.contains("epg_password"));
+        assert!(rendered.contains("interface"));
+        assert!(rendered.contains("eth0"));
+        assert!(rendered.contains("port"));
+        assert!(rendered.contains("8080"));
+        assert_eq!(rendered.matches("[REDACTED]").count(), 4);
     }
 
     #[test]
