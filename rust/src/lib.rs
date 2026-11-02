@@ -2,6 +2,7 @@
 //! Typed configuration and error contracts for the Rust IPTV media server.
 
 pub mod config;
+pub mod crypto;
 pub mod error;
 pub mod health;
 pub mod lifecycle;
