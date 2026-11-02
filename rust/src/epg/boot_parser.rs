@@ -55,6 +55,11 @@ fn html5_unescape(value: &str) -> String {
             index += length + 1;
             continue;
         }
+        if let Some((length, replacement)) = numeric_entity(&value[index + 1..]) {
+            output.push(replacement);
+            index += length + 1;
+            continue;
+        }
         let Some(relative_end) = value[index + 1..].find(';') else {
             output.push('&');
             index += 1;
@@ -64,9 +69,6 @@ fn html5_unescape(value: &str) -> String {
         let entity = &value[index + 1..end];
         if let Some(replacement) = named_entity(entity) {
             output.push_str(replacement);
-            index = end + 1;
-        } else if let Some(replacement) = numeric_entity(entity) {
-            output.push(replacement);
             index = end + 1;
         } else {
             output.push('&');
@@ -82,31 +84,69 @@ fn named_entity(entity: &str) -> Option<&'static str> {
         "lt" => Some("<"),
         "gt" => Some(">"),
         "quot" => Some("\""),
+        "nbsp" => Some("\u{a0}"),
         "apos" => Some("'"),
+        "copy" => Some("©"),
+        "reg" => Some("®"),
+        "not" => Some("¬"),
+        "alpha" => Some("α"),
+        "beta" => Some("β"),
+        "eacute" => Some("é"),
+        "Aacute" => Some("Á"),
         _ => None,
     }
 }
 
 fn named_entity_without_semicolon(value: &str) -> Option<(usize, &'static str)> {
-    ["amp", "lt", "gt", "quot", "apos"].iter().find_map(|name| {
-        value.strip_prefix(name).and_then(|rest| {
-            if rest.is_empty()
-                || (rest.as_bytes()[0] != b';' && !rest.as_bytes()[0].is_ascii_alphanumeric())
-            {
-                named_entity(name).map(|replacement| (name.len(), replacement))
-            } else {
-                None
-            }
-        })
+    [
+        "eacute", "Aacute", "alpha", "beta", "nbsp", "copy", "quot", "amp", "lt", "gt", "reg",
+        "not",
+    ]
+    .iter()
+    .find_map(|name| {
+        value
+            .strip_prefix(name)
+            .and_then(|rest| (rest.is_empty() || rest.as_bytes()[0] != b';').then_some(()))
+            .and_then(|()| named_entity(name).map(|replacement| (name.len(), replacement)))
     })
 }
 
-fn numeric_entity(entity: &str) -> Option<char> {
-    let (radix, digits) = entity
-        .strip_prefix("#x")
-        .map_or((10, entity.strip_prefix('#')?), |digits| (16, digits));
-    let number = u32::from_str_radix(digits, radix).ok()?;
-    char::from_u32(number)
+fn numeric_entity(value: &str) -> Option<(usize, char)> {
+    let (radix, digits) = if let Some(digits) = value.strip_prefix("#x") {
+        (16, digits)
+    } else if let Some(digits) = value.strip_prefix("#X") {
+        (16, digits)
+    } else {
+        (10, value.strip_prefix('#')?)
+    };
+    let digit_count = digits
+        .bytes()
+        .take_while(|byte| match radix {
+            10 => byte.is_ascii_digit(),
+            16 => byte.is_ascii_hexdigit(),
+            _ => false,
+        })
+        .count();
+    if digit_count == 0 {
+        return None;
+    }
+    let number = u32::from_str_radix(&digits[..digit_count], radix).ok()?;
+    let replacement = match number {
+        0 | 0xD800..=0xDFFF | 0x0011_0000..=u32::MAX => '\u{FFFD}',
+        0x80..=0x9F => char::from_u32(
+            [
+                0x20AC, 0x81, 0x201A, 0x192, 0x201E, 0x2026, 0x2020, 0x2021, 0x2C6, 0x2030, 0x160,
+                0x2039, 0x152, 0x8D, 0x17D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022,
+                0x2013, 0x2014, 0x2DC, 0x2122, 0x161, 0x203A, 0x153, 0x9D, 0x17E, 0x178,
+            ][usize::try_from(number - 0x80).ok()?],
+        )
+        .map_or('\u{FFFD}', |character| character),
+        _ => char::from_u32(number).map_or('\u{FFFD}', |character| character),
+    };
+    Some((
+        1 + if radix == 16 { 2 } else { 1 } + digit_count,
+        replacement,
+    ))
 }
 
 fn channel_start(body: &str, from: usize) -> Option<usize> {
@@ -222,5 +262,12 @@ mod tests {
             parse_boot_channels(body).expect("valid record")[0].channel_id,
             "good"
         );
+    }
+
+    #[test]
+    fn parser_matches_python_html5_entity_boundaries_and_replacements() {
+        let body = r#"x ChannelID="c1" ChannelName="&nbsp; &ampfoo &apos &#38; &#x1F642; &unknown; &#xD800;" UserChannelID="7" TimeShiftURL="t1""#;
+        let channels = parse_boot_channels(body).expect("valid entity record");
+        assert_eq!(channels[0].name, "\u{a0} &foo &apos & 🙂 &unknown; �");
     }
 }
