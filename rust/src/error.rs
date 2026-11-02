@@ -110,6 +110,33 @@ pub enum RequestError {
     Logo,
 }
 
+/// Fixed HLS policy/token failure details kept out of public responses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HlsError {
+    /// The supplied resource token is not usable.
+    ResourceUnavailable,
+    /// The upstream target is not permitted.
+    TargetUnavailable,
+    /// The per-host concurrency budget was exhausted.
+    PermitUnavailable,
+    /// The request was cancelled during admission or transfer.
+    Cancelled,
+}
+
+impl fmt::Display for HlsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("request unavailable")
+    }
+}
+
+impl std::error::Error for HlsError {}
+
+impl From<HlsError> for AppError {
+    fn from(_: HlsError) -> Self {
+        Self::Request(RequestError::HlsProxy)
+    }
+}
+
 /// Metadata refresh failures represented without source details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshError {

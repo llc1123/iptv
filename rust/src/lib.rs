@@ -8,6 +8,7 @@ pub mod epg;
 pub mod error;
 pub mod guide;
 pub mod health;
+pub mod hls;
 pub mod lifecycle;
 pub mod logo_catalog;
 pub mod preflight;

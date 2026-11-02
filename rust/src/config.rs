@@ -74,6 +74,10 @@ pub struct Config {
     pub refresh_interval_seconds: u64,
     /// Optional provider route overrides.
     pub routes: Vec<String>,
+    /// Exact upstream HLS host allowlist entries.
+    pub upstream_allow_hosts: Vec<String>,
+    /// Upstream HLS CIDR allowlist entries.
+    pub upstream_allow_cidrs: Vec<String>,
     /// Grace period for shutdown in seconds.
     pub shutdown_grace_seconds: u64,
 }
@@ -127,6 +131,10 @@ struct Arguments {
     refresh_interval_seconds: u64,
     #[arg(long = "route", value_name = "CIDR[,via=IP][,src=IP]")]
     routes: Vec<String>,
+    #[arg(long = "upstream-allow-host", value_name = "HOST[:PORT]")]
+    upstream_allow_hosts: Vec<String>,
+    #[arg(long = "upstream-allow-cidr", value_name = "CIDR")]
+    upstream_allow_cidrs: Vec<String>,
     #[arg(long, default_value_t = 60)]
     shutdown_grace_seconds: u64,
 }
@@ -153,6 +161,8 @@ impl fmt::Debug for Arguments {
             .field("logo_catalog", &self.logo_catalog)
             .field("refresh_interval_seconds", &self.refresh_interval_seconds)
             .field("routes", &self.routes)
+            .field("upstream_allow_hosts", &self.upstream_allow_hosts)
+            .field("upstream_allow_cidrs", &self.upstream_allow_cidrs)
             .field("shutdown_grace_seconds", &self.shutdown_grace_seconds)
             .finish()
     }
@@ -199,6 +209,12 @@ impl Config {
             logo_catalog: arguments.logo_catalog,
             refresh_interval_seconds: arguments.refresh_interval_seconds,
             routes: arguments.routes,
+            upstream_allow_hosts: arguments.upstream_allow_hosts,
+            upstream_allow_cidrs: if arguments.upstream_allow_cidrs.is_empty() {
+                vec!["10.223.0.0/16".to_owned(), "20.248.0.0/13".to_owned()]
+            } else {
+                arguments.upstream_allow_cidrs
+            },
             shutdown_grace_seconds: arguments.shutdown_grace_seconds,
         })
     }
@@ -283,6 +299,40 @@ mod tests {
         assert_eq!(config.routes, ["10.223.0.0/16,via=192.0.2.1,src=192.0.2.2"]);
         assert_eq!(config.stb_id_prefix, "STB-");
         assert_eq!(config.shutdown_grace_seconds, 15);
+    }
+
+    #[test]
+    fn upstream_allowlists_are_repeatable_and_default_cidrs_are_preserved() {
+        let arguments = Arguments::try_parse_from([
+            "iptv-media-server",
+            "--dhcp-user",
+            "dhcp-user",
+            "--dhcp-password",
+            "dhcp-password",
+            "--user-id",
+            "epg-user",
+            "--password",
+            "epg-password",
+            "--upstream-allow-host",
+            "cdn.example.invalid:8443",
+            "--upstream-allow-host",
+            "media.example.invalid",
+            "--upstream-allow-cidr",
+            "192.0.2.0/24",
+        ])
+        .expect("valid upstream allowlists");
+        let config = Config::try_from(arguments).expect("valid configuration");
+        assert_eq!(
+            config.upstream_allow_hosts,
+            ["cdn.example.invalid:8443", "media.example.invalid"]
+        );
+        assert_eq!(config.upstream_allow_cidrs, ["192.0.2.0/24"]);
+
+        let defaults = Config::try_from(valid_arguments()).expect("valid configuration");
+        assert_eq!(
+            defaults.upstream_allow_cidrs,
+            ["10.223.0.0/16", "20.248.0.0/13"]
+        );
     }
 
     #[test]
