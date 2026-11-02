@@ -36,7 +36,7 @@ impl fmt::Debug for Secret {
 }
 
 /// Validated configuration consumed by the future server startup path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Config {
     /// Network interface used for IPTV acquisition.
     pub interface: String,
@@ -80,6 +80,41 @@ pub struct Config {
     pub upstream_allow_cidrs: Vec<String>,
     /// Grace period for shutdown in seconds.
     pub shutdown_grace_seconds: u64,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Config")
+            .field("interface", &self.interface)
+            .field("epg_mac", &"[REDACTED]")
+            .field("stb_id", &"[REDACTED]")
+            .field("stb_id_prefix", &"[REDACTED]")
+            .field("dhcp_user", &self.dhcp_user)
+            .field("dhcp_password", &self.dhcp_password)
+            .field("epg_user", &self.epg_user)
+            .field("epg_password", &self.epg_password)
+            .field("authentication_url", &"[REDACTED]")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("guide_past_days", &self.guide_past_days)
+            .field("guide_future_days", &self.guide_future_days)
+            .field("guide_timezone", &self.guide_timezone)
+            .field("guide_cache", &self.guide_cache)
+            .field("logo_catalog", &self.logo_catalog)
+            .field("refresh_interval_seconds", &self.refresh_interval_seconds)
+            .field("routes", &format_args!("[{} entries]", self.routes.len()))
+            .field(
+                "upstream_allow_hosts",
+                &format_args!("[{} entries]", self.upstream_allow_hosts.len()),
+            )
+            .field(
+                "upstream_allow_cidrs",
+                &format_args!("[{} entries]", self.upstream_allow_cidrs.len()),
+            )
+            .field("shutdown_grace_seconds", &self.shutdown_grace_seconds)
+            .finish()
+    }
 }
 
 #[derive(Parser)]
@@ -366,6 +401,33 @@ mod tests {
         assert!(rendered.contains("port"));
         assert!(rendered.contains("8080"));
         assert_eq!(rendered.matches("[REDACTED]").count(), 4);
+    }
+
+    #[test]
+    fn config_debug_redacts_credentials_urls_and_allowlist_values() {
+        let mut arguments = valid_arguments();
+        arguments.epg_mac = Some("aa:bb:cc:dd:ee:ff".to_owned());
+        arguments.authentication_url = "https://secret.example.invalid/auth?token=abc".to_owned();
+        arguments.upstream_allow_hosts = vec!["private.example.invalid".to_owned()];
+        arguments.upstream_allow_cidrs = vec!["10.0.0.0/8".to_owned()];
+        let config = Config::try_from(arguments).expect("valid configuration");
+        let rendered = format!("{config:?}");
+
+        for secret in [
+            "aa:bb:cc:dd:ee:ff",
+            "https://secret.example.invalid/auth?token=abc",
+            "dhcp-user",
+            "dhcp-password",
+            "epg-user",
+            "epg-password",
+            "private.example.invalid",
+            "10.0.0.0/8",
+        ] {
+            assert!(!rendered.contains(secret));
+        }
+        assert!(rendered.contains("Config"));
+        assert!(rendered.contains("port"));
+        assert!(rendered.contains("8080"));
     }
 
     #[test]
