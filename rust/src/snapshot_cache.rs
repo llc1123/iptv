@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::Notify;
 
@@ -40,6 +40,13 @@ enum Slot {
 
 pub(super) struct Flight {
     notify: Notify,
+    state: Mutex<FlightState>,
+}
+
+enum FlightState {
+    Pending,
+    Ready,
+    Failed,
 }
 
 pub(super) enum Acquire {
@@ -51,7 +58,28 @@ impl Flight {
     fn new() -> Self {
         Self {
             notify: Notify::new(),
+            state: Mutex::new(FlightState::Pending),
         }
+    }
+
+    fn complete(&self, result: &Result<Arc<[u8]>, RenderError>) -> Result<(), RenderError> {
+        let state = match result {
+            Ok(_) => FlightState::Ready,
+            Err(_) => FlightState::Failed,
+        };
+        *self
+            .state
+            .lock()
+            .map_err(|_| RenderError::CacheUnavailable)? = state;
+        Ok(())
+    }
+
+    fn is_terminal(&self) -> Result<bool, RenderError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| RenderError::CacheUnavailable)?;
+        Ok(matches!(*state, FlightState::Ready | FlightState::Failed))
     }
 }
 
@@ -97,9 +125,6 @@ impl Snapshot {
                 }
             };
         }
-        if cache.bases.len() == MAX_RENDER_BASES && cache.bases.iter().any(CacheBase::is_active) {
-            return Err(RenderError::CacheCapacity);
-        }
         if cache.bases.len() == MAX_RENDER_BASES {
             let Some(index) = cache
                 .bases
@@ -140,7 +165,7 @@ impl Snapshot {
         kind: RenderKind,
         base: &str,
         flight: &Arc<Flight>,
-        result: Result<Arc<[u8]>, RenderError>,
+        result: &Result<Arc<[u8]>, RenderError>,
     ) -> Result<(), RenderError> {
         let mut owned = false;
         let mut cache = self
@@ -152,10 +177,11 @@ impl Snapshot {
             if let Slot::Flight(current) = slot {
                 if Arc::ptr_eq(current, flight) {
                     owned = true;
-                    *slot = match result {
-                        Ok(bytes) => Slot::Ready(bytes),
+                    *slot = match &result {
+                        Ok(bytes) => Slot::Ready(Arc::clone(bytes)),
                         Err(_) => Slot::Empty,
                     };
+                    flight.complete(result)?;
                 }
             }
         }
@@ -169,15 +195,43 @@ pub(super) async fn wait_for_flight(
     flight: &Arc<Flight>,
     cancellation: Option<&CancellationToken>,
 ) -> Result<(), RenderError> {
-    if let Some(token) = cancellation {
-        tokio::select! {
-            () = flight.notify.notified() => Ok(()),
-            () = token.cancelled() => Err(RenderError::Cancelled),
+    loop {
+        if flight.is_terminal()? {
+            return Ok(());
         }
-    } else {
-        flight.notify.notified().await;
-        Ok(())
+        let notified = flight.notify.notified();
+        if flight.is_terminal()? {
+            return Ok(());
+        }
+        if let Some(token) = cancellation {
+            tokio::select! {
+                () = notified => {},
+                () = token.cancelled() => return Err(RenderError::Cancelled),
+            }
+        } else {
+            notified.await;
+        }
     }
 }
 
 pub(super) use Acquire as CacheAcquire;
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn waiter_observes_terminal_state_after_notification_was_sent() {
+        let flight = Arc::new(Flight::new());
+        let result: Result<Arc<[u8]>, RenderError> = Ok(Arc::from([1_u8]));
+        assert!(flight.complete(&result).is_ok());
+        flight.notify.notify_waiters();
+
+        let waited =
+            tokio::time::timeout(Duration::from_millis(100), wait_for_flight(&flight, None)).await;
+
+        assert!(matches!(waited, Ok(Ok(()))));
+    }
+}

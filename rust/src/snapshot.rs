@@ -227,7 +227,7 @@ impl Snapshot {
                 kind,
                 base_url.as_str(),
                 &flight,
-                Err(RenderError::Cancelled),
+                &Err(RenderError::Cancelled),
             )?;
             return Err(RenderError::Cancelled);
         }
@@ -247,11 +247,11 @@ impl Snapshot {
                 kind,
                 base_url.as_str(),
                 &flight,
-                Err(RenderError::Cancelled),
+                &Err(RenderError::Cancelled),
             )?;
             return Err(RenderError::Cancelled);
         }
-        self.finish_flight(kind, base_url.as_str(), &flight, result.clone())?;
+        self.finish_flight(kind, base_url.as_str(), &flight, &result)?;
         result
     }
 
@@ -346,6 +346,9 @@ fn stable_xmltv_programmes(input: &[Programme]) -> Vec<Programme> {
     programmes
 }
 
+#[cfg(test)]
+#[path = "snapshot_regression_tests.rs"]
+mod regression_tests;
 #[cfg(test)]
 #[path = "snapshot_tests.rs"]
 mod tests;

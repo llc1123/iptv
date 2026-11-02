@@ -165,7 +165,12 @@ fn ninth_active_base_is_rejected_without_evicting_flights() {
     ));
     for (base, flight) in flights {
         snapshot
-            .finish_flight(RenderKind::M3u, &base, &flight, Err(RenderError::Cancelled))
+            .finish_flight(
+                RenderKind::M3u,
+                &base,
+                &flight,
+                &Err(RenderError::Cancelled),
+            )
             .expect("owner still owns flight");
     }
 }
@@ -205,7 +210,7 @@ async fn cancelled_waiter_does_not_cancel_owner_and_lost_owner_cannot_publish() 
             RenderKind::M3u,
             base.as_str(),
             &flight,
-            Err(RenderError::Cancelled),
+            &Err(RenderError::Cancelled),
         )
         .expect("owner still owns flight");
     let CacheAcquire::Flight {
@@ -224,7 +229,7 @@ async fn cancelled_waiter_does_not_cancel_owner_and_lost_owner_cannot_publish() 
         .bases
         .clear();
     assert_eq!(
-        snapshot.finish_flight(RenderKind::M3u, base.as_str(), &lost, Ok(Arc::from([]))),
+        snapshot.finish_flight(RenderKind::M3u, base.as_str(), &lost, &Ok(Arc::from([]))),
         Err(RenderError::OwnershipLost)
     );
 }
