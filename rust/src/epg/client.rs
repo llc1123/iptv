@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use reqwest::cookie::Jar;
 use reqwest::redirect::Policy;
 use reqwest::{Client, Response, Url};
+use tokio::sync::Semaphore;
 
 use crate::crypto::epg_auth::{AuthenticatorInput, identity_encode, make_authenticator};
 
@@ -41,22 +42,46 @@ pub struct EpgConfig {
     pub user_group_id: String,
     /// Deterministic authenticator nonce.
     pub nonce: u32,
+    /// Deadline for the request send and write phase.
+    pub write_timeout: Duration,
+    /// Deadline for control and media permit acquisition.
+    pub pool_timeout: Duration,
+    /// Maximum number of concurrent media requests.
+    pub media_pool_size: usize,
 }
 
 impl fmt::Debug for EpgConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("EpgConfig")
-            .field("authentication_url", &self.authentication_url)
+            .field(
+                "authentication_url_scheme",
+                &Url::parse(&self.authentication_url)
+                    .ok()
+                    .map(|url| url.scheme().to_owned()),
+            )
+            .field(
+                "authentication_url_has_explicit_port",
+                &Url::parse(&self.authentication_url)
+                    .ok()
+                    .is_some_and(|url| url.port().is_some()),
+            )
+            .field("user_id_present", &!self.user_id.is_empty())
             .field("user_id", &"[REDACTED]")
+            .field("password_present", &!self.password.is_empty())
             .field("password", &"[REDACTED]")
+            .field("stb_id_present", &!self.stb_id.is_empty())
             .field("stb_id", &"[REDACTED]")
+            .field("stb_mac_present", &!self.stb_mac.is_empty())
             .field("stb_mac", &"[REDACTED]")
             .field("source_ip", &"[REDACTED]")
-            .field("stb_type", &self.stb_type)
-            .field("area_id", &self.area_id)
-            .field("user_group_id", &self.user_group_id)
+            .field("stb_type", &"[REDACTED]")
+            .field("area_id", &"[REDACTED]")
+            .field("user_group_id", &"[REDACTED]")
             .field("nonce", &self.nonce)
+            .field("write_timeout", &self.write_timeout)
+            .field("pool_timeout", &self.pool_timeout)
+            .field("media_pool_size", &self.media_pool_size)
             .finish()
     }
 }
@@ -81,6 +106,10 @@ pub enum EpgErrorClass {
     Transport,
     /// Non-success HTTP status.
     HttpStatus,
+    /// Request send or write deadline elapsed.
+    Timeout,
+    /// Permit or HTTP pool admission deadline elapsed.
+    PoolTimeout,
     /// Invalid redirect origin.
     InvalidOrigin,
     /// Required response field was absent.
@@ -131,10 +160,32 @@ impl From<EpgError> for crate::error::AppError {
 }
 
 impl EpgError {
-    pub(crate) const fn transport(stage: EpgErrorStage, attempt: u8, _timeout: bool) -> Self {
+    pub(crate) const fn transport(stage: EpgErrorStage, attempt: u8, timeout: bool) -> Self {
         Self {
             stage,
-            class: EpgErrorClass::Transport,
+            class: if timeout {
+                EpgErrorClass::Timeout
+            } else {
+                EpgErrorClass::Transport
+            },
+            status: None,
+            field: None,
+            attempt,
+        }
+    }
+    pub(crate) const fn timeout(stage: EpgErrorStage, attempt: u8) -> Self {
+        Self {
+            stage,
+            class: EpgErrorClass::Timeout,
+            status: None,
+            field: None,
+            attempt,
+        }
+    }
+    pub(crate) const fn pool_timeout(stage: EpgErrorStage, attempt: u8) -> Self {
+        Self {
+            stage,
+            class: EpgErrorClass::PoolTimeout,
             status: None,
             field: None,
             attempt,
@@ -211,6 +262,8 @@ pub struct EpgClient {
     _jar: Arc<Jar>,
     control_client: Client,
     media_client: Client,
+    control_permits: Arc<Semaphore>,
+    media_permits: Arc<Semaphore>,
 }
 
 impl fmt::Debug for EpgClient {
@@ -239,12 +292,16 @@ impl EpgClient {
         let jar = Arc::new(Jar::default());
         let control_client = build_client(config.source_ip, Arc::clone(&jar))?;
         let media_client = build_client(config.source_ip, Arc::clone(&jar))?;
+        let control_permits = Arc::new(Semaphore::new(1));
+        let media_permits = Arc::new(Semaphore::new(config.media_pool_size));
         Ok(Self {
             config: Arc::new(config),
             coordinator,
             _jar: jar,
             control_client,
             media_client,
+            control_permits,
+            media_permits,
         })
     }
 
@@ -274,8 +331,8 @@ impl EpgClient {
         reason = "the provider requires one exact ordered authentication sequence"
     )]
     async fn authenticate_generation(&self, generation: u64) -> Result<SessionBundle, EpgError> {
-        let discovery_url = Url::parse(&self.config.authentication_url)
-            .map_err(|_| EpgError::class(EpgErrorStage::Discovery, EpgErrorClass::Parse))?;
+        let discovery_url =
+            parse_epg_url(&self.config.authentication_url, EpgErrorStage::Discovery)?;
         let mut discovery_url = discovery_url;
         discovery_url
             .query_pairs_mut()
@@ -285,8 +342,11 @@ impl EpgClient {
         let discovery = send_with_client_retry(
             &self.control_client,
             |client| client.get(discovery_url.clone()),
-            |duration| Box::pin(tokio::time::sleep(duration)),
+            &super::session::TokioSleeper,
             EpgErrorStage::Discovery,
+            Arc::clone(&self.control_permits),
+            self.config.pool_timeout,
+            self.config.write_timeout,
         )
         .await?;
         ensure_status(&discovery, EpgErrorStage::Discovery, 1)?;
@@ -295,15 +355,23 @@ impl EpgClient {
             .join("/EPG/jsp/authLoginHWCU.jsp")
             .map_err(|_| EpgError::class(EpgErrorStage::Login, EpgErrorClass::InvalidOrigin))?;
         let login_form = encode_form(&[("UserID", self.config.user_id.as_str()), ("VIP", "")]);
-        let login = self
-            .control_client
-            .post(login_path)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(login_form)
-            .send()
-            .await
-            .map_err(|_| EpgError::transport(EpgErrorStage::Login, 1, false))?;
+        let login = send_with_client_retry(
+            &self.control_client,
+            |client| {
+                client
+                    .post(login_path.clone())
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body(login_form.clone())
+            },
+            &super::session::TokioSleeper,
+            EpgErrorStage::Login,
+            Arc::clone(&self.control_permits),
+            self.config.pool_timeout,
+            self.config.write_timeout,
+        )
+        .await?;
         ensure_status(&login, EpgErrorStage::Login, 1)?;
+        let mut cookie_snapshot = capture_cookie_snapshot(&login);
         let encrypt_token = extract_query_token(
             &login
                 .text()
@@ -347,15 +415,24 @@ impl EpgClient {
             .map_err(|_| {
                 EpgError::class(EpgErrorStage::Authentication, EpgErrorClass::InvalidOrigin)
             })?;
-        let validation = self
-            .control_client
-            .post(validation_path)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(encode_form(&form))
-            .send()
-            .await
-            .map_err(|_| EpgError::transport(EpgErrorStage::Authentication, 1, false))?;
+        let validation_form = encode_form(&form);
+        let validation = send_with_client_retry(
+            &self.control_client,
+            |client| {
+                client
+                    .post(validation_path.clone())
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .body(validation_form.clone())
+            },
+            &super::session::TokioSleeper,
+            EpgErrorStage::Authentication,
+            Arc::clone(&self.control_permits),
+            self.config.pool_timeout,
+            self.config.write_timeout,
+        )
+        .await?;
         ensure_status(&validation, EpgErrorStage::Authentication, 1)?;
+        cookie_snapshot.extend(capture_cookie_snapshot(&validation));
         let body = validation
             .text()
             .await
@@ -372,6 +449,9 @@ impl EpgClient {
             temp_key,
             self.control_client.clone(),
             self.media_client.clone(),
+            Arc::clone(&self.media_permits),
+            self.config.pool_timeout,
+            cookie_snapshot,
         ))
     }
 }
@@ -425,17 +505,7 @@ fn ensure_status(response: &Response, stage: EpgErrorStage, attempt: u8) -> Resu
 }
 
 fn final_origin(url: &Url) -> Result<Url, EpgError> {
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || url.port().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return Err(EpgError::class(
-            EpgErrorStage::Discovery,
-            EpgErrorClass::InvalidOrigin,
-        ));
-    }
+    validate_origin(url, EpgErrorStage::Discovery)?;
     let mut origin = url.clone();
     origin.set_path("");
     origin.set_query(None);
@@ -443,25 +513,63 @@ fn final_origin(url: &Url) -> Result<Url, EpgError> {
     Ok(origin)
 }
 
-fn extract_query_token(body: &str, name: &'static str) -> Result<String, EpgError> {
-    let value = body
-        .match_indices(name)
-        .find_map(|(index, _)| {
-            let suffix = body[index + name.len()..].trim_start();
-            suffix.strip_prefix('=')
-        })
-        .map_or("", |value| {
-            value
-                .split(['&', '"', '\'', '<', '>', ' ', '\t', '\r', '\n'])
-                .next()
-                .unwrap_or("")
-        });
-    let decoded = percent_decode(value);
-    if decoded.is_empty() {
-        Err(EpgError::field(EpgErrorStage::Login, name))
-    } else {
-        Ok(decoded)
+fn parse_epg_url(value: &str, stage: EpgErrorStage) -> Result<Url, EpgError> {
+    let authority = value
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
+        .unwrap_or_default();
+    if authority.contains('@') {
+        return Err(EpgError::class(stage, EpgErrorClass::InvalidOrigin));
     }
+    let url = Url::parse(value).map_err(|_| EpgError::class(stage, EpgErrorClass::Parse))?;
+    validate_origin(&url, stage)?;
+    Ok(url)
+}
+
+fn validate_origin(url: &Url, stage: EpgErrorStage) -> Result<(), EpgError> {
+    let authority = url
+        .as_str()
+        .split_once("://")
+        .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
+        .unwrap_or_default();
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || url.port().is_none()
+        || authority.contains('@')
+    {
+        return Err(EpgError::class(stage, EpgErrorClass::InvalidOrigin));
+    }
+    Ok(())
+}
+
+fn extract_query_token(body: &str, name: &'static str) -> Result<String, EpgError> {
+    for (index, _) in body.match_indices(name) {
+        if index > 0
+            && body[..index]
+                .chars()
+                .next_back()
+                .is_some_and(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            continue;
+        }
+        let mut suffix = &body[index + name.len()..];
+        suffix = suffix.trim_start();
+        let Some(value) = suffix.strip_prefix('=') else {
+            continue;
+        };
+        let value = value
+            .strip_prefix('"')
+            .or_else(|| value.strip_prefix('\''))
+            .unwrap_or(value)
+            .split(['&', '"', '\'', '<', '>', ' ', '\t', '\r', '\n'])
+            .next()
+            .unwrap_or("");
+        let decoded = percent_decode(value);
+        if !decoded.is_empty() {
+            return Ok(decoded);
+        }
+    }
+    Err(EpgError::field(EpgErrorStage::Login, name))
 }
 
 fn extract_config(body: &str, name: &'static str) -> Result<String, EpgError> {
@@ -474,10 +582,27 @@ fn extract_config(body: &str, name: &'static str) -> Result<String, EpgError> {
 }
 
 fn extract_config_optional(body: &str, name: &str) -> String {
-    let marker = format!("SetConfig('{name}','");
-    body.split_once(&marker)
-        .and_then(|(_, rest)| rest.split_once("')"))
-        .map_or_else(String::new, |(value, _)| value.to_owned())
+    ["CU", "CTC"]
+        .iter()
+        .find_map(|prefix| {
+            let marker = format!("{prefix}SetConfig('{name}','");
+            body.split_once(&marker)
+                .and_then(|(_, rest)| rest.split_once("')"))
+                .map(|(value, _)| value.to_owned())
+        })
+        .unwrap_or_default()
+}
+
+fn capture_cookie_snapshot(response: &Response) -> Vec<String> {
+    response
+        .headers()
+        .get_all(reqwest::header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .filter_map(|value| value.split(';').next())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn percent_decode(value: &str) -> String {

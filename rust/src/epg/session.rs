@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use reqwest::{Client, Url};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 use super::client::{EpgError, EpgErrorStage};
 
@@ -26,6 +26,14 @@ impl Clock for SessionClock {
         Instant::now()
     }
 }
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    reason = "session fixtures use explicit construction failures"
+)]
+#[path = "session_tests.rs"]
+mod tests;
 
 /// Injectable asynchronous backoff sleeper.
 pub trait Sleeper: Send + Sync {
@@ -53,6 +61,9 @@ pub struct SessionBundle {
     temp_key: String,
     control_client: Client,
     media_client: Client,
+    media_permits: Arc<Semaphore>,
+    media_pool_timeout: Duration,
+    cookie_snapshot: Vec<String>,
 }
 
 impl std::fmt::Debug for SessionBundle {
@@ -60,10 +71,14 @@ impl std::fmt::Debug for SessionBundle {
         formatter
             .debug_struct("SessionBundle")
             .field("generation", &self.generation)
-            .field("origin", &self.origin)
-            .field("user_token", &"[REDACTED]")
-            .field("session_id", &"[REDACTED]")
-            .field("temp_key", &"[REDACTED]")
+            .field("origin_scheme", &self.origin.scheme())
+            .field("origin_has_explicit_port", &self.origin.port().is_some())
+            .field("user_token_present", &!self.user_token.is_empty())
+            .field("session_id_present", &!self.session_id.is_empty())
+            .field("temp_key_present", &!self.temp_key.is_empty())
+            .field("cookie_snapshot_present", &!self.cookie_snapshot.is_empty())
+            .field("control_client_role", &"control")
+            .field("media_client_role", &"media")
             .finish_non_exhaustive()
     }
 }
@@ -89,6 +104,9 @@ impl SessionBundle {
         temp_key: String,
         control_client: Client,
         media_client: Client,
+        media_permits: Arc<Semaphore>,
+        media_pool_timeout: Duration,
+        cookie_snapshot: Vec<String>,
     ) -> Self {
         Self {
             generation,
@@ -99,6 +117,9 @@ impl SessionBundle {
             temp_key,
             control_client,
             media_client,
+            media_permits,
+            media_pool_timeout,
+            cookie_snapshot,
         }
     }
 
@@ -142,6 +163,20 @@ impl SessionBundle {
     pub fn is_fresh(&self, now: Instant) -> bool {
         now.duration_since(self.created_at) < SESSION_TTL
     }
+
+    /// Acquires one bounded media-plane request permit.
+    ///
+    /// # Errors
+    /// Returns a redacted pool-timeout error when admission exceeds the configured deadline.
+    pub async fn acquire_media_permit(&self) -> Result<OwnedSemaphorePermit, EpgError> {
+        tokio::time::timeout(
+            self.media_pool_timeout,
+            Arc::clone(&self.media_permits).acquire_owned(),
+        )
+        .await
+        .map_err(|_| EpgError::pool_timeout(EpgErrorStage::Request, 1))?
+        .map_err(|_| EpgError::pool_timeout(EpgErrorStage::Request, 1))
+    }
 }
 
 type FlightResult = Result<Arc<SessionBundle>, EpgError>;
@@ -152,11 +187,15 @@ struct Flight {
     published: Arc<Notify>,
 }
 
+struct CoordinatorState {
+    current: Option<Arc<SessionBundle>>,
+    flight: Option<Arc<Flight>>,
+}
+
 #[derive(Clone)]
 /// Generation-keyed authentication flight coordinator.
 pub struct AuthCoordinator {
-    state: Arc<Mutex<Option<Arc<SessionBundle>>>>,
-    flight: Arc<Mutex<Option<Arc<Flight>>>>,
+    state: Arc<Mutex<CoordinatorState>>,
     clock: Arc<dyn Clock>,
     shutdown: crate::lifecycle::CancellationToken,
     _shutdown_source: Option<crate::lifecycle::CancellationSource>,
@@ -180,8 +219,10 @@ impl AuthCoordinator {
     pub fn new(clock: Arc<dyn Clock>) -> Self {
         let source = crate::lifecycle::CancellationSource::new();
         Self {
-            state: Arc::new(Mutex::new(None)),
-            flight: Arc::new(Mutex::new(None)),
+            state: Arc::new(Mutex::new(CoordinatorState {
+                current: None,
+                flight: None,
+            })),
             clock,
             shutdown: source.token(),
             _shutdown_source: Some(source),
@@ -195,8 +236,10 @@ impl AuthCoordinator {
         shutdown: crate::lifecycle::CancellationToken,
     ) -> Self {
         Self {
-            state: Arc::new(Mutex::new(None)),
-            flight: Arc::new(Mutex::new(None)),
+            state: Arc::new(Mutex::new(CoordinatorState {
+                current: None,
+                flight: None,
+            })),
             clock,
             shutdown,
             _shutdown_source: None,
@@ -205,7 +248,7 @@ impl AuthCoordinator {
 
     /// Returns the latest committed bundle, if any.
     pub async fn current(&self) -> Option<Arc<SessionBundle>> {
-        self.state.lock().await.clone()
+        self.state.lock().await.current.clone()
     }
 
     /// Runs or joins the current detached authentication flight.
@@ -220,32 +263,31 @@ impl AuthCoordinator {
         F: FnOnce(u64) -> Fut + Send + 'static,
         Fut: Future<Output = FlightResult> + Send + 'static,
     {
-        if let Some(bundle) = self.current().await {
-            if bundle.is_fresh(self.clock.now()) {
-                return Ok(bundle);
-            }
-        }
-        let next_generation = self
-            .current()
-            .await
-            .map_or(0, |bundle| bundle.generation() + 1);
         let (flight, owner) = {
-            let mut guard = self.flight.lock().await;
-            if let Some(flight) = guard.as_ref() {
+            let mut state = self.state.lock().await;
+            if let Some(bundle) = state.current.as_ref() {
+                if bundle.is_fresh(self.clock.now()) {
+                    return Ok(Arc::clone(bundle));
+                }
+            }
+            if let Some(flight) = state.flight.as_ref() {
                 (Arc::clone(flight), false)
             } else {
+                let next_generation = state
+                    .current
+                    .as_ref()
+                    .map_or(0, |bundle| bundle.generation() + 1);
                 let flight = Arc::new(Flight {
                     generation: next_generation,
                     result: Arc::new(Mutex::new(None)),
                     published: Arc::new(Notify::new()),
                 });
-                *guard = Some(Arc::clone(&flight));
+                state.flight = Some(Arc::clone(&flight));
                 (flight, true)
             }
         };
         if owner {
             let state = Arc::clone(&self.state);
-            let flights = Arc::clone(&self.flight);
             let owner_flight = Arc::clone(&flight);
             let shutdown = self.shutdown.clone();
             let clock = Arc::clone(&self.clock);
@@ -255,23 +297,25 @@ impl AuthCoordinator {
                     () = shutdown.cancelled() => Err(EpgError::cancelled(EpgErrorStage::Authentication)),
                 };
                 let result = result.map(|bundle| Arc::new(bundle.stamped(clock.now())));
-                if let Ok(bundle) = &result {
-                    let mut current = state.lock().await;
-                    if current
-                        .as_ref()
-                        .is_none_or(|old| old.generation() < bundle.generation())
-                    {
-                        *current = Some(Arc::clone(bundle));
-                    }
-                }
-                *owner_flight.result.lock().await = Some(result);
-                owner_flight.published.notify_waiters();
-                let mut guard = flights.lock().await;
-                if guard
+                let mut state = state.lock().await;
+                let owns_flight = state
+                    .flight
                     .as_ref()
-                    .is_some_and(|current| Arc::ptr_eq(current, &owner_flight))
-                {
-                    *guard = None;
+                    .is_some_and(|current| Arc::ptr_eq(current, &owner_flight));
+                if owns_flight {
+                    if let Ok(bundle) = &result {
+                        let generation_matches = bundle.generation() == owner_flight.generation;
+                        let current_is_older = state
+                            .current
+                            .as_ref()
+                            .is_none_or(|old| old.generation() < owner_flight.generation);
+                        if generation_matches && current_is_older {
+                            state.current = Some(Arc::clone(bundle));
+                        }
+                    }
+                    *owner_flight.result.lock().await = Some(result);
+                    owner_flight.published.notify_waiters();
+                    state.flight = None;
                 }
             });
         }
