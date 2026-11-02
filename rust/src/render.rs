@@ -8,13 +8,15 @@ use crate::guide::{GuideTimeError, GuideZone};
 #[path = "render_writer.rs"]
 mod render_writer;
 use render_writer::{
-    Writer, append_component, validate_line_fields, validate_xml_value, write_component, xml_attr,
-    xml_text,
+    Writer, validate_line_fields, validate_xml_value, write_component, xml_attr, xml_text,
 };
 
 /// Maximum accepted base URL length and rendered response size.
 pub const MAX_RENDER_BYTES: usize = 16 * 1024 * 1024;
-const MAX_BASE_URL_BYTES: usize = 2048;
+
+#[path = "render_base.rs"]
+mod render_base;
+pub use render_base::BaseUrl;
 
 /// The two independently cached feed formats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,89 +25,6 @@ pub enum RenderKind {
     M3u,
     /// XMLTV guide feed.
     Xmltv,
-}
-
-/// A validated direct request origin retained exactly for cache identity.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct BaseUrl(String);
-
-impl BaseUrl {
-    /// Validates a direct `http` or `https` scheme and authority without headers or paths.
-    ///
-    /// # Errors
-    /// Returns [`RenderError::InvalidBaseUrl`] for malformed, oversized, or control-bearing input.
-    pub fn parse(value: &str) -> Result<Self, RenderError> {
-        if value.is_empty()
-            || value.len() > MAX_BASE_URL_BYTES
-            || value.chars().any(char::is_control)
-            || value.to_ascii_lowercase().contains("forwarded")
-        {
-            return Err(RenderError::InvalidBaseUrl);
-        }
-        let Some((scheme, remainder)) = value.split_once("://") else {
-            return Err(RenderError::InvalidBaseUrl);
-        };
-        if !matches!(scheme, "http" | "https") || remainder.is_empty() {
-            return Err(RenderError::InvalidBaseUrl);
-        }
-        let authority_end = remainder.find('/').unwrap_or(remainder.len());
-        let authority = &remainder[..authority_end];
-        let path = &remainder[authority_end..];
-        if authority.is_empty() || path.chars().any(|character| character != '/') {
-            return Err(RenderError::InvalidBaseUrl);
-        }
-        if authority.contains('@') || authority.contains(' ') || authority.contains('\\') {
-            return Err(RenderError::InvalidBaseUrl);
-        }
-        let host = if let Some(end) = authority.find(']') {
-            if !authority.starts_with('[') {
-                return Err(RenderError::InvalidBaseUrl);
-            }
-            let suffix = &authority[end + 1..];
-            if !suffix.is_empty() {
-                let Some(port) = suffix.strip_prefix(':') else {
-                    return Err(RenderError::InvalidBaseUrl);
-                };
-                valid_port(port)?;
-            }
-            &authority[..=end]
-        } else if authority.matches(':').count() == 1 {
-            let (host, port) = authority
-                .rsplit_once(':')
-                .ok_or(RenderError::InvalidBaseUrl)?;
-            if host.is_empty() {
-                return Err(RenderError::InvalidBaseUrl);
-            }
-            valid_port(port)?;
-            host
-        } else if authority.contains(':') {
-            return Err(RenderError::InvalidBaseUrl);
-        } else {
-            authority
-        };
-        if host.is_empty() {
-            return Err(RenderError::InvalidBaseUrl);
-        }
-        Ok(Self(value.to_owned()))
-    }
-
-    /// Returns the exact input used as the cache key.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    fn joined(&self) -> &str {
-        self.0.trim_end_matches('/')
-    }
-}
-
-fn valid_port(port: &str) -> Result<(), RenderError> {
-    if port.is_empty() || port.parse::<u16>().ok().is_none_or(|value| value == 0) {
-        Err(RenderError::InvalidBaseUrl)
-    } else {
-        Ok(())
-    }
 }
 
 /// Fixed, redacted rendering and cache errors.
@@ -236,9 +155,7 @@ fn write_xmltv(
         writer.text("  <channel id=\"", false)?;
         xml_attr(writer, &channel.channel_id)?;
         writer.line("\">", true)?;
-        writer.text("    <display-name>", false)?;
-        xml_text(writer, &channel.name)?;
-        writer.line("</display-name>", true)?;
+        write_xml_text_element(writer, "display-name", &channel.name)?;
         if !channel.logo_url.is_empty() {
             validate_xml_value(&channel.logo_url)?;
             writer.text("    <icon src=\"", false)?;
@@ -252,19 +169,24 @@ fn write_xmltv(
         .map(|item| item.channel_id.as_str())
         .collect();
     let mut seen = std::collections::HashSet::new();
-    for programme in programmes {
-        if !ids.contains(programme.channel_id.as_str()) {
-            continue;
-        }
-        let key = (
-            &programme.channel_id,
-            programme.start_time_ms,
-            programme.end_time_ms,
-            &programme.title,
-        );
-        if !seen.insert(key) {
-            continue;
-        }
+    let mut ordered = programmes
+        .iter()
+        .filter(|programme| ids.contains(programme.channel_id.as_str()))
+        .filter(|programme| {
+            seen.insert((
+                programme.channel_id.as_str(),
+                programme.start_time_ms,
+                programme.end_time_ms,
+                programme.title.as_str(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        left.channel_id
+            .cmp(&right.channel_id)
+            .then(left.start_time_ms.cmp(&right.start_time_ms))
+    });
+    for programme in ordered {
         validate_xml_value(&programme.channel_id)?;
         validate_xml_value(&programme.title)?;
         let start = zone.format_timestamp_ms(programme.start_time_ms)?;
@@ -276,27 +198,34 @@ fn write_xmltv(
         writer.text("\" channel=\"", false)?;
         xml_attr(writer, &programme.channel_id)?;
         writer.line("\">", true)?;
-        writer.text("    <title>", false)?;
-        xml_text(writer, &programme.title)?;
-        writer.line("</title>", true)?;
+        write_xml_text_element(writer, "title", &programme.title)?;
         if !programme.programme_id.is_empty() {
             validate_xml_value(&programme.programme_id)?;
             writer.text("    <episode-num system=\"iptv-id\">", false)?;
             xml_text(writer, &programme.programme_id)?;
             writer.line("</episode-num>", true)?;
             writer.text("    <url>", false)?;
-            let mut path = Vec::new();
-            append_component(&mut path, &programme.channel_id)?;
-            path.push(b'/');
-            append_component(&mut path, &programme.programme_id)?;
-            writer.text(base.joined(), false)?;
+            xml_text(writer, base.joined())?;
             writer.text("/replay/", false)?;
-            writer.bytes(&path)?;
+            write_component(writer, &programme.channel_id)?;
+            writer.bytes(b"/")?;
+            write_component(writer, &programme.programme_id)?;
             writer.line(".m3u8</url>", true)?;
         }
         writer.line("  </programme>", true)?;
     }
     writer.line("</tv>", false)?;
+    Ok(())
+}
+
+fn write_xml_text_element(writer: &mut Writer, name: &str, value: &str) -> Result<(), RenderError> {
+    if value.is_empty() {
+        writer.line(&format!("    <{name} />"), true)?;
+    } else {
+        writer.text(&format!("    <{name}>"), false)?;
+        xml_text(writer, value)?;
+        writer.line(&format!("</{name}>"), true)?;
+    }
     Ok(())
 }
 
@@ -306,6 +235,9 @@ impl From<GuideTimeError> for RenderError {
     }
 }
 
+#[cfg(test)]
+#[path = "render_regression_tests.rs"]
+mod regression_tests;
 #[cfg(test)]
 #[path = "render_tests.rs"]
 mod tests;

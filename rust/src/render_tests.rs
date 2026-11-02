@@ -74,6 +74,8 @@ fn empty_feeds_keep_their_protocol_terminators() {
 fn base_validation_preserves_exact_key_and_rejects_header_input() {
     let base = BaseUrl::parse("http://example.test/").expect("valid trailing slash");
     assert_eq!(base.as_str(), "http://example.test/");
+    assert_eq!(format!("{base:?}"), "BaseUrl(\"<redacted>\")");
+    assert!(!format!("{base:?}").contains("example.test"));
     assert_eq!(
         BaseUrl::parse("X-Forwarded-Host: example.test"),
         Err(RenderError::InvalidBaseUrl)
@@ -90,6 +92,22 @@ fn base_validation_preserves_exact_key_and_rejects_header_input() {
         BaseUrl::parse("http://example.test:0"),
         Err(RenderError::InvalidBaseUrl)
     );
+    for value in [
+        "http://example.test?token=secret",
+        "http://example.test#fragment",
+        "http://example.test/<xml>",
+        "http://exa&mple.test",
+        "http://-example.test",
+        "http://example..test",
+        "http://[not-ipv6]",
+        "http://example.test:65536",
+    ] {
+        assert_eq!(
+            BaseUrl::parse(value),
+            Err(RenderError::InvalidBaseUrl),
+            "{value} must not be accepted"
+        );
+    }
 }
 
 #[test]

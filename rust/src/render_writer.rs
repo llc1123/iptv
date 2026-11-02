@@ -89,23 +89,17 @@ pub(super) fn validate_xml_value(value: &str) -> Result<(), RenderError> {
 }
 
 pub(super) fn write_component(writer: &mut Writer, value: &str) -> Result<(), RenderError> {
-    let mut encoded = Vec::new();
-    append_component(&mut encoded, value)?;
-    writer.bytes(&encoded)
-}
-
-pub(super) fn append_component(output: &mut Vec<u8>, value: &str) -> Result<(), RenderError> {
     for byte in value.as_bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            output.try_reserve(1).map_err(|_| RenderError::Oversize)?;
-            output.push(*byte);
+            writer.bytes(std::slice::from_ref(byte))?;
         } else {
-            output.try_reserve(3).map_err(|_| RenderError::Oversize)?;
-            output.extend_from_slice(b"%00");
-            let index = output.len().checked_sub(2).ok_or(RenderError::Oversize)?;
             let digits = b"0123456789ABCDEF";
-            output[index] = digits[usize::from(byte >> 4)];
-            output[index + 1] = digits[usize::from(byte & 0x0f)];
+            let encoded = [
+                b'%',
+                digits[usize::from(byte >> 4)],
+                digits[usize::from(byte & 0x0f)],
+            ];
+            writer.bytes(&encoded)?;
         }
     }
     Ok(())
