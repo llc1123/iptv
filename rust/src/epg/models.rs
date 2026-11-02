@@ -3,7 +3,7 @@
 use std::fmt;
 
 use serde::de::{self, Visitor};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Provider channel identifier from the EPG response.
 pub type EpgChannelId = String;
@@ -187,7 +187,7 @@ impl fmt::Debug for BootChannel {
 }
 
 /// A programme returned by the provider.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct Programme {
     /// Programme title.
     #[serde(rename = "name", alias = "title")]
