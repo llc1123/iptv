@@ -263,6 +263,23 @@ impl AuthCoordinator {
         F: FnOnce(u64) -> Fut + Send + 'static,
         Fut: Future<Output = FlightResult> + Send + 'static,
     {
+        self.ensure_authenticated_with_shutdown(authenticate, self.shutdown.clone())
+            .await
+    }
+
+    /// Runs or joins authentication while binding the flight to a caller-owned shutdown token.
+    ///
+    /// # Errors
+    /// Returns the shared redacted authentication result or cancellation from either owner.
+    pub async fn ensure_authenticated_with_shutdown<F, Fut>(
+        &self,
+        authenticate: F,
+        shutdown: crate::lifecycle::CancellationToken,
+    ) -> Result<Arc<SessionBundle>, EpgError>
+    where
+        F: FnOnce(u64) -> Fut + Send + 'static,
+        Fut: Future<Output = FlightResult> + Send + 'static,
+    {
         let (flight, owner) = {
             let mut state = self.state.lock().await;
             if let Some(bundle) = state.current.as_ref() {
@@ -289,12 +306,14 @@ impl AuthCoordinator {
         if owner {
             let state = Arc::clone(&self.state);
             let owner_flight = Arc::clone(&flight);
-            let shutdown = self.shutdown.clone();
+            let coordinator_shutdown = self.shutdown.clone();
+            let flight_shutdown = shutdown.clone();
             let clock = Arc::clone(&self.clock);
             tokio::spawn(async move {
                 let result = tokio::select! {
                     result = authenticate(owner_flight.generation) => result,
-                    () = shutdown.cancelled() => Err(EpgError::cancelled(EpgErrorStage::Authentication)),
+                    () = coordinator_shutdown.cancelled() => Err(EpgError::cancelled(EpgErrorStage::Authentication)),
+                    () = flight_shutdown.cancelled() => Err(EpgError::cancelled(EpgErrorStage::Authentication)),
                 };
                 let result = result.map(|bundle| Arc::new(bundle.stamped(clock.now())));
                 let mut state = state.lock().await;
@@ -324,7 +343,10 @@ impl AuthCoordinator {
             if let Some(result) = flight.result.lock().await.as_ref() {
                 return result.clone();
             }
-            notified.await;
+            tokio::select! {
+                () = notified => {},
+                () = shutdown.cancelled() => return Err(EpgError::cancelled(EpgErrorStage::Authentication)),
+            }
         }
     }
 }

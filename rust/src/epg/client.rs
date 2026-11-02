@@ -339,6 +339,28 @@ impl EpgClient {
             .await
     }
 
+    /// Authenticates on demand while binding the shared flight to shutdown.
+    ///
+    /// # Errors
+    /// Returns only safe stage, class, status, field, and attempt information.
+    pub async fn authenticate_with_shutdown(
+        &self,
+        shutdown: crate::lifecycle::CancellationToken,
+    ) -> Result<Arc<SessionBundle>, EpgError> {
+        let client = self.clone();
+        self.coordinator
+            .ensure_authenticated_with_shutdown(
+                move |generation| async move {
+                    client
+                        .authenticate_generation(generation)
+                        .await
+                        .map(Arc::new)
+                },
+                shutdown,
+            )
+            .await
+    }
+
     /// Returns the most recently committed generation.
     pub async fn current_session(&self) -> Option<Arc<SessionBundle>> {
         self.coordinator.current().await

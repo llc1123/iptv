@@ -197,15 +197,16 @@ async fn failed_refresh_preserves_the_previous_stale_bundle() {
 }
 
 #[tokio::test]
-async fn shutdown_cancels_and_publishes_the_authentication_flight() {
+async fn caller_shutdown_cancels_the_authentication_flight() {
     let source = crate::lifecycle::CancellationSource::new();
-    let coordinator =
-        AuthCoordinator::with_shutdown(Arc::new(TestClock::new(Instant::now())), source.token());
+    let flight_shutdown = source.token();
+    let coordinator = AuthCoordinator::new(Arc::new(TestClock::new(Instant::now())));
     let task = tokio::spawn(async move {
         coordinator
-            .ensure_authenticated(|_| async {
-                pending::<Result<Arc<SessionBundle>, EpgError>>().await
-            })
+            .ensure_authenticated_with_shutdown(
+                |_| async { pending::<Result<Arc<SessionBundle>, EpgError>>().await },
+                flight_shutdown,
+            )
             .await
     });
     tokio::task::yield_now().await;
