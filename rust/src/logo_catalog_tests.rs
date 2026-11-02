@@ -54,7 +54,7 @@ fn valid_catalog_reads_bounded_bytes_and_content_type() {
 #[test]
 fn missing_and_duplicate_entries_follow_python_compatibility() {
     let fixture = Fixture::new();
-    let body = r#"{"version":1,"channels":[{"channel_id":"c1"},{"channel_id":"c1","logo_path":"logos/missing.jpg"}]}"#;
+    let body = r#"{"version":1,"channels":[{"channel_id":"c1","stream_url":"first","display_name":"First"},{"channel_id":"c1","stream_url":"last","display_name":"Last","logo_path":"logos/missing.jpg"}]}"#;
     let catalog = LogoCatalog::load(fixture.catalog(body)).expect("duplicate is last-wins");
     assert!(catalog.read("c1").expect("missing logo").is_none());
     assert!(
@@ -65,11 +65,37 @@ fn missing_and_duplicate_entries_follow_python_compatibility() {
 }
 
 #[test]
+fn required_logo_metadata_fields_are_invalid_schema_when_missing() {
+    let fixture = Fixture::new();
+    for body in [
+        r#"{"version":1,"channels":[{"channel_id":"c1","display_name":"One"}]}"#,
+        r#"{"version":1,"channels":[{"channel_id":"c1","stream_url":"s"}]}"#,
+    ] {
+        assert!(matches!(
+            LogoCatalog::load(fixture.catalog(body)),
+            Err(LogoCatalogError::InvalidSchema)
+        ));
+    }
+}
+
+#[test]
 fn malformed_schema_version_and_limits_are_fixed_failures() {
     let fixture = Fixture::new();
     assert!(matches!(
         LogoCatalog::load(fixture.catalog("{")),
         Err(LogoCatalogError::MalformedJson)
+    ));
+    assert!(matches!(
+        LogoCatalog::load(fixture.catalog(r"[]")),
+        Err(LogoCatalogError::InvalidSchema)
+    ));
+    assert!(matches!(
+        LogoCatalog::load(fixture.catalog(r#"{"version":"1","channels":[]}"#)),
+        Err(LogoCatalogError::InvalidSchema)
+    ));
+    assert!(matches!(
+        LogoCatalog::load(fixture.catalog(r#"{"version":1,"channels":{}}"#)),
+        Err(LogoCatalogError::InvalidSchema)
     ));
     assert!(matches!(
         LogoCatalog::load(fixture.catalog(r#"{"version":2,"channels":[]}"#)),

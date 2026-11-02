@@ -106,9 +106,7 @@ struct CatalogFile {
 #[serde(rename_all = "snake_case")]
 struct CatalogEntry {
     pub(super) channel_id: String,
-    #[serde(default)]
     pub(super) stream_url: String,
-    #[serde(default)]
     pub(super) display_name: String,
     #[serde(default)]
     pub(super) tvg_id: String,
@@ -190,8 +188,13 @@ impl LogoCatalog {
             return Err(LogoCatalogError::CatalogTooLarge);
         }
         let bytes = read_bounded(path, limits.max_catalog_bytes, LogoCatalogError::Read)?;
-        let file: CatalogFile =
+        let value: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| LogoCatalogError::MalformedJson)?;
+        if !value.is_object() {
+            return Err(LogoCatalogError::InvalidSchema);
+        }
+        let file: CatalogFile =
+            serde_json::from_value(value).map_err(|_| LogoCatalogError::InvalidSchema)?;
         if file.version != 1 {
             return Err(LogoCatalogError::UnsupportedVersion);
         }
