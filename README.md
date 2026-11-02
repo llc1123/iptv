@@ -102,6 +102,11 @@ The Rust package is pinned to Rust 1.87.0 in `rust-toolchain.toml`. Prepare a
 host explicitly; verification never installs tools, resolves dependencies, or
 changes network state:
 
+The raw DHCP implementation pins `dhcproto` to 0.14.0 because the 0.15.0
+dependency graph requires Rust 1.88. DHCP option decisions remain in the
+compatibility parser: unlike `dhcproto`'s map decoder, it preserves the
+Python client's first-occurrence behavior for duplicate options.
+
 ```bash
 rustup toolchain install 1.87.0 --profile minimal --component rustfmt --component clippy
 uv sync --offline

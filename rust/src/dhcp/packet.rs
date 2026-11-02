@@ -296,6 +296,10 @@ pub fn decode_reply(
     if dhcp.get(236..240) != Some(&DHCP_COOKIE) {
         return Err(PacketError::InvalidCookie);
     }
+    // dhcproto 0.14 validates the message shape, but its BTreeMap option
+    // decoder is last-occurrence-wins. Keep the Python client's first-
+    // occurrence semantics in parse_options below instead of using its
+    // decoded option values for compatibility decisions.
     let _decoded = v4::Message::from_bytes(dhcp).map_err(|_| PacketError::DecodeFailed)?;
     let options = parse_options(
         dhcp.get(DHCP_MIN_PAYLOAD..)
