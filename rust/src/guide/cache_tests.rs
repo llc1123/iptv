@@ -1,4 +1,4 @@
-use std::{fs, io, time::Duration};
+use std::{fs, io, path::Path, time::Duration};
 
 use super::*;
 
@@ -101,4 +101,22 @@ fn cancellation_and_injected_failure_leave_no_temporary_file() {
         .unwrap();
     assert!(entries.is_empty());
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn relative_cache_path_syncs_the_current_directory() {
+    let path = format!("guide-cache-current-dir-{}.json", std::process::id());
+    let metadata_path = format!("{path}.meta.json");
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&metadata_path);
+    let cache = GuideCache::new(path.clone().into());
+
+    cache
+        .save(&[programme()], 1_000, &fingerprint(), &NeverCancelled)
+        .unwrap();
+
+    assert!(Path::new(&path).is_file());
+    assert!(Path::new(&metadata_path).is_file());
+    fs::remove_file(path).unwrap();
+    fs::remove_file(metadata_path).unwrap();
 }

@@ -57,7 +57,8 @@ pub(crate) fn write_atomic<C: Cancellation, H: AtomicWriteHooks>(
 ) -> Result<(), CacheError> {
     let parent = path
         .parent()
-        .ok_or_else(|| CacheError::Io(io::Error::other("cache has no parent")))?;
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(CacheError::Io)?;
     let file_name = path
         .file_name()
