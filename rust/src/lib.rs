@@ -6,6 +6,7 @@ pub mod crypto;
 pub mod dhcp;
 pub mod epg;
 pub mod error;
+pub mod guide;
 pub mod health;
 pub mod lifecycle;
 pub mod preflight;
