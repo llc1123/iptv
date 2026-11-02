@@ -9,6 +9,7 @@ pub mod error;
 pub mod guide;
 pub mod health;
 pub mod lifecycle;
+pub mod logo_catalog;
 pub mod preflight;
 mod python_scan;
 pub mod render;
