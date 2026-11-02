@@ -353,11 +353,14 @@ fn decode_udp(frame: &[u8]) -> Result<(Ipv4Addr, &[u8]), PacketError> {
     if frame.len() < min_len || frame.get(12..14) != Some(&[0x08, 0x00]) {
         return Err(PacketError::MalformedFrame);
     }
-    let ihl = frame
+    let version_ihl = frame
         .get(ip_start)
         .copied()
-        .ok_or(PacketError::MalformedFrame)?
-        & 0x0f;
+        .ok_or(PacketError::MalformedFrame)?;
+    if version_ihl >> 4 != 4 {
+        return Err(PacketError::MalformedFrame);
+    }
+    let ihl = version_ihl & 0x0f;
     if ihl != 5 {
         return Err(PacketError::MalformedFrame);
     }
@@ -663,6 +666,18 @@ mod tests {
         );
         assert_eq!(
             decode_reply(&valid[..valid.len() - 1], 7, MAC, ReplyKind::Ack),
+            Err(PacketError::MalformedFrame)
+        );
+        let mut wrong_version = valid;
+        wrong_version[ETHERNET_HEADER_LEN] = 0x65;
+        wrong_version[ETHERNET_HEADER_LEN + 10] = 0;
+        wrong_version[ETHERNET_HEADER_LEN + 11] = 0;
+        let header_checksum =
+            checksum(&wrong_version[ETHERNET_HEADER_LEN..ETHERNET_HEADER_LEN + IPV4_HEADER_LEN]);
+        wrong_version[ETHERNET_HEADER_LEN + 10..ETHERNET_HEADER_LEN + 12]
+            .copy_from_slice(&header_checksum.to_be_bytes());
+        assert_eq!(
+            decode_reply(&wrong_version, 7, MAC, ReplyKind::Ack),
             Err(PacketError::MalformedFrame)
         );
     }
