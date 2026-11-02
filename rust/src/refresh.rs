@@ -80,6 +80,12 @@ pub trait MetadataSource: Send + Sync {
         &self,
         cancellation: CancellationToken,
     ) -> BoxFuture<'_, Result<Arc<MetadataSession>, MetadataError>>;
+    /// Reauthenticates only when the observed session generation is still current.
+    fn reauthenticate(
+        &self,
+        session: Arc<MetadataSession>,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<Arc<MetadataSession>, MetadataError>>;
     /// Fetches boot channels, codes, and groups as one publishable collection.
     fn channels(
         &self,
@@ -126,6 +132,26 @@ impl MetadataSource for EpgMetadataSource {
             let generation = session.generation();
             let mut current = self.session.lock().map_err(|_| MetadataError::Business)?;
             *current = Some(session);
+            Ok(Arc::new(MetadataSession::new(generation)))
+        })
+    }
+
+    fn reauthenticate(
+        &self,
+        session: Arc<MetadataSession>,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<Arc<MetadataSession>, MetadataError>> {
+        Box::pin(async move {
+            let current = tokio::select! {
+                result = self.client.force_reauthenticate_with_shutdown(
+                    session.generation(),
+                    cancellation.clone(),
+                ) => result.map_err(MetadataError::from)?,
+                () = cancellation.cancelled() => return Err(MetadataError::Cancelled),
+            };
+            let generation = current.generation();
+            let mut stored = self.session.lock().map_err(|_| MetadataError::Business)?;
+            *stored = Some(current);
             Ok(Arc::new(MetadataSession::new(generation)))
         })
     }
@@ -352,7 +378,11 @@ impl RefreshEngine {
         let (session, channels) = match channel_result {
             Ok(channels) => (session, channels),
             Err(MetadataError::SessionExpired) => {
-                let session = match self.source.authenticate(self.cancellation.clone()).await {
+                let session = match self
+                    .source
+                    .reauthenticate(Arc::clone(&session), self.cancellation.clone())
+                    .await
+                {
                     Ok(session) => session,
                     Err(error) => {
                         self.record_cycle_failure().await;
@@ -501,11 +531,14 @@ impl RefreshEngine {
                     let channel_id = channel.channel_id.clone();
                     let replay_channel = channel.clone();
                     let result = source
-                        .programmes(session, channel, window, cancellation.clone())
+                        .programmes(Arc::clone(&session), channel, window, cancellation.clone())
                         .await;
                     let result = match result {
                         Err(MetadataError::SessionExpired) => {
-                            match source.authenticate(cancellation.clone()).await {
+                            match source
+                                .reauthenticate(Arc::clone(&session), cancellation.clone())
+                                .await
+                            {
                                 Ok(replay_session) => {
                                     source
                                         .programmes(

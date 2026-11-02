@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use reqwest::{Client, Url};
-use tokio::sync::Barrier;
+use tokio::sync::{Barrier, Notify};
 
 use super::{AuthCoordinator, Clock, EpgError, EpgErrorStage, SessionBundle};
 use crate::epg::EpgErrorClass;
@@ -148,6 +148,61 @@ async fn stale_callers_share_one_flight_even_after_the_previous_flight_completes
         1
     );
     assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn forced_reauthentication_ignores_freshness_and_shares_the_generation_flight() {
+    let now = Instant::now();
+    let coordinator = AuthCoordinator::new(Arc::new(TestClock::new(now)));
+    let initial = coordinator
+        .ensure_authenticated(move |generation| async move {
+            Ok(Arc::new(fixture_bundle(generation, now)))
+        })
+        .await
+        .expect("initial auth");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let first_coordinator = coordinator.clone();
+    let first_calls = Arc::clone(&calls);
+    let first_started = Arc::clone(&started);
+    let first_release = Arc::clone(&release);
+    let first = tokio::spawn(async move {
+        first_coordinator
+            .force_reauthenticate(initial.generation(), move |generation| async move {
+                first_calls.fetch_add(1, Ordering::SeqCst);
+                first_started.notify_one();
+                first_release.notified().await;
+                Ok(Arc::new(fixture_bundle(generation, now)))
+            })
+            .await
+    });
+    started.notified().await;
+    let second_coordinator = coordinator.clone();
+    let second_calls = Arc::clone(&calls);
+    let second = tokio::spawn(async move {
+        second_coordinator
+            .force_reauthenticate(0, move |generation| async move {
+                second_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(Arc::new(fixture_bundle(generation, now)))
+            })
+            .await
+    });
+    tokio::task::yield_now().await;
+    release.notify_one();
+    let (first, second) = tokio::join!(first, second);
+    assert_eq!(
+        first.expect("first task").expect("first auth").generation(),
+        1
+    );
+    assert_eq!(
+        second
+            .expect("second task")
+            .expect("second auth")
+            .generation(),
+        1
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 const SESSION_TTL_SECS: u64 = super::SESSION_TTL.as_secs();

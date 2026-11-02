@@ -192,6 +192,11 @@ struct CoordinatorState {
     flight: Option<Arc<Flight>>,
 }
 
+enum AuthenticationRequest {
+    Ensure,
+    Force { observed_generation: u64 },
+}
+
 #[derive(Clone)]
 /// Generation-keyed authentication flight coordinator.
 pub struct AuthCoordinator {
@@ -263,8 +268,33 @@ impl AuthCoordinator {
         F: FnOnce(u64) -> Fut + Send + 'static,
         Fut: Future<Output = FlightResult> + Send + 'static,
     {
-        self.ensure_authenticated_with_shutdown(authenticate, self.shutdown.clone())
-            .await
+        self.authenticate_with_shutdown(
+            AuthenticationRequest::Ensure,
+            authenticate,
+            self.shutdown.clone(),
+        )
+        .await
+    }
+
+    /// Forces reauthentication only when the observed generation is still current.
+    ///
+    /// # Errors
+    /// Returns the shared redacted authentication result or cancellation from either owner.
+    pub async fn force_reauthenticate<F, Fut>(
+        &self,
+        observed_generation: u64,
+        authenticate: F,
+    ) -> Result<Arc<SessionBundle>, EpgError>
+    where
+        F: FnOnce(u64) -> Fut + Send + 'static,
+        Fut: Future<Output = FlightResult> + Send + 'static,
+    {
+        self.force_reauthenticate_with_shutdown(
+            observed_generation,
+            authenticate,
+            self.shutdown.clone(),
+        )
+        .await
     }
 
     /// Runs or joins authentication while binding the flight to a caller-owned shutdown token.
@@ -280,11 +310,57 @@ impl AuthCoordinator {
         F: FnOnce(u64) -> Fut + Send + 'static,
         Fut: Future<Output = FlightResult> + Send + 'static,
     {
+        self.authenticate_with_shutdown(AuthenticationRequest::Ensure, authenticate, shutdown)
+            .await
+    }
+
+    /// Forces reauthentication while binding the shared flight to caller shutdown.
+    ///
+    /// # Errors
+    /// Returns the shared redacted authentication result or cancellation from either owner.
+    pub async fn force_reauthenticate_with_shutdown<F, Fut>(
+        &self,
+        observed_generation: u64,
+        authenticate: F,
+        shutdown: crate::lifecycle::CancellationToken,
+    ) -> Result<Arc<SessionBundle>, EpgError>
+    where
+        F: FnOnce(u64) -> Fut + Send + 'static,
+        Fut: Future<Output = FlightResult> + Send + 'static,
+    {
+        self.authenticate_with_shutdown(
+            AuthenticationRequest::Force {
+                observed_generation,
+            },
+            authenticate,
+            shutdown,
+        )
+        .await
+    }
+
+    async fn authenticate_with_shutdown<F, Fut>(
+        &self,
+        request: AuthenticationRequest,
+        authenticate: F,
+        shutdown: crate::lifecycle::CancellationToken,
+    ) -> Result<Arc<SessionBundle>, EpgError>
+    where
+        F: FnOnce(u64) -> Fut + Send + 'static,
+        Fut: Future<Output = FlightResult> + Send + 'static,
+    {
         let (flight, owner) = {
             let mut state = self.state.lock().await;
             if let Some(bundle) = state.current.as_ref() {
-                if bundle.is_fresh(self.clock.now()) {
-                    return Ok(Arc::clone(bundle));
+                match request {
+                    AuthenticationRequest::Ensure if bundle.is_fresh(self.clock.now()) => {
+                        return Ok(Arc::clone(bundle));
+                    }
+                    AuthenticationRequest::Force {
+                        observed_generation,
+                    } if bundle.generation() > observed_generation => {
+                        return Ok(Arc::clone(bundle));
+                    }
+                    AuthenticationRequest::Ensure | AuthenticationRequest::Force { .. } => {}
                 }
             }
             if let Some(flight) = state.flight.as_ref() {

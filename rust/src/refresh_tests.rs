@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use super::{
@@ -21,6 +21,7 @@ type TestFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 struct FakeSource {
     calls: AtomicUsize,
     auth_calls: AtomicUsize,
+    generation: AtomicU64,
     fail_windows: bool,
     expire_first_window: AtomicBool,
     cancel_on_programme: Option<crate::lifecycle::CancellationSource>,
@@ -33,6 +34,16 @@ impl MetadataSource for FakeSource {
     ) -> TestFuture<'_, Result<Arc<MetadataSession>, MetadataError>> {
         self.auth_calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(Arc::new(MetadataSession::new(1))) })
+    }
+
+    fn reauthenticate(
+        &self,
+        _session: Arc<MetadataSession>,
+        _cancellation: CancellationToken,
+    ) -> TestFuture<'_, Result<Arc<MetadataSession>, MetadataError>> {
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 2;
+        self.auth_calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move { Ok(Arc::new(MetadataSession::new(generation))) })
     }
 
     fn channels(
@@ -59,13 +70,14 @@ impl MetadataSource for FakeSource {
 
     fn programmes(
         &self,
-        _session: Arc<MetadataSession>,
+        session: Arc<MetadataSession>,
         _channel: BootChannel,
         window: GuideWindow,
         _cancellation: CancellationToken,
     ) -> TestFuture<'_, Result<Vec<Programme>, MetadataError>> {
         let failed = self.fail_windows;
         let expire = self.expire_first_window.swap(false, Ordering::SeqCst);
+        let reauthenticated_generation = self.auth_calls.load(Ordering::SeqCst) > 1;
         if let Some(cancellation) = &self.cancel_on_programme {
             cancellation.cancel();
         }
@@ -75,6 +87,8 @@ impl MetadataSource for FakeSource {
                 Err(MetadataError::SessionExpired)
             } else if failed {
                 Err(MetadataError::Business)
+            } else if reauthenticated_generation && session.generation() != 2 {
+                Err(MetadataError::Authentication)
             } else {
                 Ok(vec![programme("c1", window.start_ms, window.end_ms, "p1")])
             }
@@ -227,6 +241,7 @@ async fn successful_cycle_publishes_one_generation_and_records_health() {
     let source = Arc::new(FakeSource {
         calls: AtomicUsize::new(0),
         auth_calls: AtomicUsize::new(0),
+        generation: AtomicU64::new(0),
         fail_windows: false,
         expire_first_window: AtomicBool::new(false),
         cancel_on_programme: None,
@@ -263,6 +278,7 @@ async fn all_scheduled_windows_complete_after_the_error_detail_limit() {
     let source = Arc::new(FakeSource {
         calls: AtomicUsize::new(0),
         auth_calls: AtomicUsize::new(0),
+        generation: AtomicU64::new(0),
         fail_windows: true,
         expire_first_window: AtomicBool::new(false),
         cancel_on_programme: None,
@@ -290,6 +306,7 @@ async fn all_scheduled_windows_complete_after_the_error_detail_limit() {
 
     assert_eq!(engine.refresh_once().await, Err(MetadataError::Business));
     assert_eq!(source_for_assertion.calls.load(Ordering::SeqCst), 33);
+    assert_eq!(source_for_assertion.auth_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -298,6 +315,7 @@ async fn expired_programme_window_reauthenticates_and_replays_once() {
     let source = Arc::new(FakeSource {
         calls: AtomicUsize::new(0),
         auth_calls: AtomicUsize::new(0),
+        generation: AtomicU64::new(0),
         fail_windows: false,
         expire_first_window: AtomicBool::new(true),
         cancel_on_programme: None,
@@ -338,6 +356,7 @@ async fn cancellation_after_window_fetch_skips_snapshot_publication() {
     let source = Arc::new(FakeSource {
         calls: AtomicUsize::new(0),
         auth_calls: AtomicUsize::new(0),
+        generation: AtomicU64::new(0),
         fail_windows: false,
         expire_first_window: AtomicBool::new(false),
         cancel_on_programme: Some(cancellation.clone()),
@@ -377,6 +396,7 @@ async fn scheduler_uses_injected_clock_at_cycle_completion() {
     let source = Arc::new(FakeSource {
         calls: AtomicUsize::new(0),
         auth_calls: AtomicUsize::new(0),
+        generation: AtomicU64::new(0),
         fail_windows: false,
         expire_first_window: AtomicBool::new(false),
         cancel_on_programme: None,

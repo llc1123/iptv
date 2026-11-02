@@ -361,6 +361,30 @@ impl EpgClient {
             .await
     }
 
+    /// Reauthenticates after a request observed the supplied session generation expire.
+    ///
+    /// # Errors
+    /// Returns only safe stage, class, status, field, and attempt information.
+    pub async fn force_reauthenticate_with_shutdown(
+        &self,
+        observed_generation: u64,
+        shutdown: crate::lifecycle::CancellationToken,
+    ) -> Result<Arc<SessionBundle>, EpgError> {
+        let client = self.clone();
+        self.coordinator
+            .force_reauthenticate_with_shutdown(
+                observed_generation,
+                move |generation| async move {
+                    client
+                        .authenticate_generation(generation)
+                        .await
+                        .map(Arc::new)
+                },
+                shutdown,
+            )
+            .await
+    }
+
     /// Returns the most recently committed generation.
     pub async fn current_session(&self) -> Option<Arc<SessionBundle>> {
         self.coordinator.current().await
