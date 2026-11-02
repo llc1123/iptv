@@ -2,6 +2,7 @@
 
 #![allow(clippy::missing_errors_doc)]
 
+use std::collections::HashMap;
 use std::fmt;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
@@ -419,8 +420,8 @@ fn decode_udp(frame: &[u8]) -> Result<(Ipv4Addr, &[u8]), PacketError> {
     ))
 }
 
-fn parse_options(raw: &[u8]) -> Result<Vec<(u8, Vec<u8>)>, PacketError> {
-    let mut options = Vec::new();
+fn parse_options(raw: &[u8]) -> Result<HashMap<u8, Vec<u8>>, PacketError> {
+    let mut options = HashMap::new();
     let mut cursor = 0_usize;
     let mut ended = false;
     while cursor < raw.len() {
@@ -448,7 +449,7 @@ fn parse_options(raw: &[u8]) -> Result<Vec<(u8, Vec<u8>)>, PacketError> {
                     .get(cursor..end)
                     .ok_or(PacketError::MalformedOptions)?
                     .to_vec();
-                options.push((code, value));
+                options.entry(code).or_insert(value);
                 cursor = end;
             }
         }
@@ -459,20 +460,16 @@ fn parse_options(raw: &[u8]) -> Result<Vec<(u8, Vec<u8>)>, PacketError> {
     Ok(options)
 }
 
-fn option_bytes(options: &[(u8, Vec<u8>)], code: u8) -> Result<&[u8], PacketError> {
+fn option_bytes(options: &HashMap<u8, Vec<u8>>, code: u8) -> Result<&[u8], PacketError> {
     option_bytes_optional(options, code).ok_or(PacketError::MissingOption)
 }
 
-fn option_bytes_optional(options: &[(u8, Vec<u8>)], code: u8) -> Option<&[u8]> {
-    options
-        .iter()
-        .rev()
-        .find(|(found, _)| *found == code)
-        .map(|(_, value)| value.as_slice())
+fn option_bytes_optional(options: &HashMap<u8, Vec<u8>>, code: u8) -> Option<&[u8]> {
+    options.get(&code).map(Vec::as_slice)
 }
 
 fn option_ipv4_optional(
-    options: &[(u8, Vec<u8>)],
+    options: &HashMap<u8, Vec<u8>>,
     code: u8,
 ) -> Result<Option<Ipv4Addr>, PacketError> {
     let Some(value) = option_bytes_optional(options, code) else {
@@ -486,7 +483,10 @@ fn option_ipv4_optional(
     ])))
 }
 
-fn option_u32_optional(options: &[(u8, Vec<u8>)], code: u8) -> Result<Option<u32>, PacketError> {
+fn option_u32_optional(
+    options: &HashMap<u8, Vec<u8>>,
+    code: u8,
+) -> Result<Option<u32>, PacketError> {
     let Some(value) = option_bytes_optional(options, code) else {
         return Ok(None);
     };
@@ -679,6 +679,34 @@ mod tests {
         assert_eq!(
             decode_reply(&wrong_version, 7, MAC, ReplyKind::Ack),
             Err(PacketError::MalformedFrame)
+        );
+    }
+
+    #[test]
+    fn ack_duplicate_server_options_use_first_occurrence() {
+        let lease = 3600_u32.to_be_bytes();
+        let mask = [255, 255, 255, 0];
+        let router = [192, 0, 2, 1];
+        let first_server = [192, 0, 2, 1];
+        let later_server = [198, 51, 100, 1];
+        let frame = reply_frame(
+            7,
+            &[
+                (53, &[5]),
+                (51, &lease),
+                (43, &[0x10]),
+                (1, &mask),
+                (3, &router),
+                (54, &first_server),
+                (54, &later_server),
+            ],
+        );
+
+        let decoded = decode_reply(&frame, 7, MAC, ReplyKind::Ack);
+
+        assert_eq!(
+            decoded.and_then(|reply| reply.server.ok_or(PacketError::MissingOption)),
+            Ok(Ipv4Addr::new(192, 0, 2, 1))
         );
     }
 }
