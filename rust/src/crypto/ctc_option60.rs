@@ -1,5 +1,7 @@
 //! CTC DHCP Option 60 encoding and validation.
 
+use std::fmt;
+
 use md5::{Digest, Md5};
 
 use super::{CryptoError, ede3_encrypt, zero_pad};
@@ -8,7 +10,7 @@ const PREFIX: [u8; 3] = [0, 0, 0x1f];
 const METHOD: u8 = 1;
 
 /// Inputs for one deterministic Option 60 encoding.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Option60Input<'a> {
     /// DHCP password used in the MD5 input.
     pub password: &'a str,
@@ -18,6 +20,18 @@ pub struct Option60Input<'a> {
     pub random: [u8; 8],
     /// Injected eight-byte little-endian monotonic timestamp.
     pub monotonic_ms: [u8; 8],
+}
+
+impl fmt::Debug for Option60Input<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Option60Input")
+            .field("password", &"[REDACTED]")
+            .field("login", &"[REDACTED]")
+            .field("random", &self.random)
+            .field("monotonic_ms", &self.monotonic_ms)
+            .finish()
+    }
 }
 
 /// The validated fixed fields of an Option 60 value.
@@ -203,5 +217,14 @@ mod tests {
                 .len(),
             8
         );
+    }
+
+    #[test]
+    fn debug_redacts_credential_values() {
+        let rendered = format!("{:?}", input("fixture-login-secret"));
+        assert!(!rendered.contains("fixture-dhcp-password"));
+        assert!(!rendered.contains("fixture-login-secret"));
+        assert!(rendered.contains("random"));
+        assert!(rendered.contains("REDACTED"));
     }
 }

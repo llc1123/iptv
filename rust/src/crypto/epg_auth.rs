@@ -1,11 +1,13 @@
 //! EPG authenticator encoding.
 
+use std::fmt;
+
 use md5::{Digest, Md5};
 
 use super::{CryptoError, ede3_encrypt, pkcs7_pad};
 
 /// Inputs for one deterministic EPG authenticator.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct AuthenticatorInput<'a> {
     /// Provider encryption token.
     pub encrypt_token: &'a str,
@@ -23,6 +25,22 @@ pub struct AuthenticatorInput<'a> {
     pub custom_str: &'a str,
     /// Injected decimal nonce in the inclusive range 0..=99,999,999.
     pub random_value: u32,
+}
+
+impl fmt::Debug for AuthenticatorInput<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthenticatorInput")
+            .field("encrypt_token", &"[REDACTED]")
+            .field("user_id", &"[REDACTED]")
+            .field("stb_id", &"[REDACTED]")
+            .field("ip_address", &self.ip_address)
+            .field("mac", &self.mac)
+            .field("password", &"[REDACTED]")
+            .field("custom_str", &"[REDACTED]")
+            .field("random_value", &self.random_value)
+            .finish()
+    }
 }
 
 /// Return the uppercase MD5 identity value used by the EPG login.
@@ -140,5 +158,15 @@ mod tests {
             identity_encode("session", "share"),
             "A870BEBF2BF97445CB2E758D2D39A6F3"
         );
+    }
+
+    #[test]
+    fn debug_redacts_credential_values() {
+        let rendered = format!("{:?}", input("fixture-epg-password-secret", 7));
+        assert!(!rendered.contains("FIXTURE-ENCRYPT-TOKEN"));
+        assert!(!rendered.contains("fixture-user"));
+        assert!(!rendered.contains("fixture-epg-password-secret"));
+        assert!(rendered.contains("random_value"));
+        assert!(rendered.contains("REDACTED"));
     }
 }
