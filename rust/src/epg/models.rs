@@ -211,7 +211,7 @@ pub struct Programme {
         default,
         rename = "ID",
         alias = "programme_id",
-        deserialize_with = "deserialize_number_or_string"
+        deserialize_with = "deserialize_string"
     )]
     pub programme_id: String,
     /// EPG channel identifier.
@@ -262,7 +262,11 @@ pub struct TvodAddress {
     )]
     pub programme_id: String,
     /// EPG channel identifier.
-    #[serde(rename = "channelID", alias = "channel_id")]
+    #[serde(
+        rename = "channelID",
+        alias = "channel_id",
+        deserialize_with = "deserialize_number_or_string"
+    )]
     pub channel_id: EpgChannelId,
     /// Start timestamp in milliseconds.
     #[serde(
@@ -279,7 +283,11 @@ pub struct TvodAddress {
     )]
     pub end_time_ms: i64,
     /// Provider playback URL.
-    #[serde(rename = "playURL", alias = "play_url")]
+    #[serde(
+        rename = "playURL",
+        alias = "play_url",
+        deserialize_with = "deserialize_number_or_string"
+    )]
     pub play_url: String,
 }
 
