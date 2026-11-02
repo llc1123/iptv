@@ -21,6 +21,12 @@ impl Secret {
         }
         Ok(Self(value))
     }
+
+    /// Exposes the credential only to the component that must encode it.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl std::fmt::Debug for Secret {
