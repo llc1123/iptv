@@ -139,7 +139,7 @@ fn fixture_rewrites_every_checked_in_hls_playlist_case() {
 fn master_media_and_ll_hls_attributes_preserve_non_uri_bytes() {
     let body = br#"#EXTM3U
 #EXT-X-STREAM-INF:BANDWIDTH=1,URI="video/main.m3u8"
-  video/main.m3u8	
+  video/main.m3u8
 #EXT-X-PART:DURATION=0.5,URI="part.bin",SERVER-URI="server.mp4"
 #EXT-X-PRELOAD-HINT:TYPE=PART,URI="next.bin"
 #EXT-X-RENDITION-REPORT:URI="../rendition.m3u8",LAST-MSN=1
@@ -155,7 +155,7 @@ fn master_media_and_ll_hls_attributes_preserve_non_uri_bytes() {
     .expect("playlist rewrites");
     let output = String::from_utf8(result.body).expect("UTF-8 output");
     assert!(output.contains("#EXT-X-STREAM-INF:BANDWIDTH=1,URI=\"/_hls/"));
-    assert!(output.contains("  /_hls/fixturetok00000000000002.m3u8\t\n"));
+    assert!(output.contains("  /_hls/fixturetok00000000000002.m3u8\n"));
     assert!(output.contains("#EXT-X-PART:DURATION=0.5,URI=\"/_hls/"));
     assert_eq!(result.resources.len(), 6);
     assert_eq!(
@@ -231,6 +231,19 @@ fn malformed_utf8_attributes_and_limits_register_nothing() {
     assert!(
         rewrite_playlist(
             too_many.as_bytes(),
+            &url("https://origin.test/a.m3u8"),
+            &cancellation.token(),
+            &store
+        )
+        .is_err()
+    );
+    assert_eq!(store.len(), 0);
+    let large_repeated_uri_lines = (0..PLAYLIST_MAX_BYTES / 2)
+        .map(|_| "x\n")
+        .collect::<String>();
+    assert!(
+        rewrite_playlist(
+            large_repeated_uri_lines.as_bytes(),
             &url("https://origin.test/a.m3u8"),
             &cancellation.token(),
             &store

@@ -100,6 +100,9 @@ fn scan_playlist(body: &[u8], text: &str) -> Result<Vec<Span>, HlsError> {
             let start = trim_ascii_space_tab(body, line_start, line_end).0;
             let end = trim_ascii_space_tab(body, line_start, line_end).1;
             if start < end {
+                if spans.len() >= PLAYLIST_MAX_URI_REFERENCES {
+                    return Err(HlsError::ResourceUnavailable);
+                }
                 spans
                     .try_reserve(1)
                     .map_err(|_| HlsError::ResourceUnavailable)?;
@@ -305,6 +308,9 @@ fn scan_attributes(
             return Ok(());
         }
         if (key == b"URI" || key == b"SERVER-URI") && value_start < cursor {
+            if spans.len() >= PLAYLIST_MAX_URI_REFERENCES {
+                return Err(HlsError::ResourceUnavailable);
+            }
             spans
                 .try_reserve(1)
                 .map_err(|_| HlsError::ResourceUnavailable)?;
