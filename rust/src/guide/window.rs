@@ -58,6 +58,24 @@ impl FromStr for GuideZone {
 }
 
 impl GuideZone {
+    /// Formats a Unix-millisecond timestamp using this configured guide zone.
+    ///
+    /// # Errors
+    /// Returns [`GuideTimeError::InvalidTime`] when the timestamp cannot be represented.
+    pub fn format_timestamp_ms(&self, timestamp_ms: i64) -> Result<String, GuideTimeError> {
+        let timestamp = chrono::DateTime::from_timestamp_millis(timestamp_ms)
+            .ok_or(GuideTimeError::InvalidTime)?;
+        let formatted = match self {
+            Self::Fixed { offset_minutes } => {
+                let offset = chrono::FixedOffset::east_opt(offset_minutes.saturating_mul(60))
+                    .ok_or(GuideTimeError::InvalidZone)?;
+                timestamp.with_timezone(&offset).format("%Y%m%d%H%M%S %z")
+            }
+            Self::Iana(zone) => timestamp.with_timezone(zone).format("%Y%m%d%H%M%S %z"),
+        };
+        Ok(formatted.to_string())
+    }
+
     fn resolve(&self, local: NaiveDateTime) -> Result<DateTime<Utc>, GuideTimeError> {
         match self {
             Self::Fixed { offset_minutes } => {

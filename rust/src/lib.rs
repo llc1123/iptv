@@ -11,6 +11,8 @@ pub mod health;
 pub mod lifecycle;
 pub mod preflight;
 mod python_scan;
+pub mod render;
+pub mod snapshot;
 /// Startup admission composition for the Python preflight and lifecycle guards.
 pub mod startup_gate;
 
