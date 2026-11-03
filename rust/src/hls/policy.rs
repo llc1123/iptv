@@ -7,7 +7,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue, RANGE, USER_AGENT};
+use reqwest::header::{
+    ACCEPT, ACCEPT_ENCODING, CONTENT_ENCODING, HeaderMap, HeaderName, HeaderValue, RANGE,
+    USER_AGENT,
+};
 use reqwest::{Client, StatusCode, Url};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -102,6 +105,7 @@ impl RequestHeaders {
                 );
             }
         }
+        map.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
         Ok(map)
     }
 }
@@ -236,7 +240,7 @@ impl<R: Resolver + 'static> HlsPolicy<R> {
             return Ok(());
         }
         if let Ok(ip) = host.parse::<IpAddr>() {
-            if self.cidrs.iter().any(|cidr| cidr.contains(ip)) && !unsafe_ip(ip) {
+            if self.cidrs.iter().any(|cidr| cidr.contains(ip)) && !unconditionally_unsafe_ip(ip) {
                 return Ok(());
             }
         }
@@ -263,7 +267,7 @@ impl<R: Resolver + 'static> HlsPolicy<R> {
             .ok_or(HlsPolicyError::InvalidTarget)?;
         let host_allowed = self.host_allowed(url)?;
         if let Ok(ip) = host.parse::<IpAddr>() {
-            return if unsafe_ip(ip) {
+            return if unconditionally_unsafe_ip(ip) {
                 Err(HlsPolicyError::DisallowedTarget)
             } else {
                 Ok(vec![SocketAddr::new(ip, port)])
@@ -276,7 +280,7 @@ impl<R: Resolver + 'static> HlsPolicy<R> {
             .map_err(|_| HlsPolicyError::Transport)?;
         if addresses.is_empty()
             || addresses.iter().any(|address| {
-                unsafe_ip(address.ip())
+                unconditionally_unsafe_ip(address.ip())
                     || (!self.cidrs.is_empty()
                         && !self.cidrs.iter().any(|cidr| cidr.contains(address.ip()))
                         && !host_allowed)
@@ -473,13 +477,12 @@ impl Cidr {
     }
 }
 
-fn unsafe_ip(ip: IpAddr) -> bool {
+fn unconditionally_unsafe_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(value) => {
             value.is_loopback()
                 || value.is_unspecified()
                 || value.is_multicast()
-                || value.is_private()
                 || value.is_link_local()
                 || value.octets() == [255, 255, 255, 255]
         }
@@ -489,9 +492,7 @@ fn unsafe_ip(ip: IpAddr) -> bool {
                 || value.is_multicast()
                 || value.is_unique_local()
                 || value.segments()[0] == 0xfe80
-                || value
-                    .to_ipv4_mapped()
-                    .is_some_and(|mapped| unsafe_ip(IpAddr::V4(mapped)))
+                || value.to_ipv4_mapped().is_some()
         }
     }
 }
@@ -509,6 +510,7 @@ pub fn safe_response_headers(headers: &HeaderMap) -> HeaderMap {
         HeaderName::from_static("content-length"),
         HeaderName::from_static("content-range"),
         HeaderName::from_static("accept-ranges"),
+        CONTENT_ENCODING,
     ] {
         if let Some(value) = headers.get(&name) {
             safe.insert(name, value.clone());
@@ -581,12 +583,40 @@ mod tests {
         };
         let map = headers.to_header_map();
         assert!(map.is_ok());
+        if let Ok(map) = map {
+            assert_eq!(map[ACCEPT_ENCODING], "identity");
+        }
         let mut upstream = HeaderMap::new();
         upstream.insert("content-type", HeaderValue::from_static("video/mp2t"));
+        upstream.insert("content-encoding", HeaderValue::from_static("gzip"));
         upstream.insert("server", HeaderValue::from_static("secret"));
         let safe = safe_response_headers(&upstream);
         assert!(safe.contains_key("content-type"));
+        assert_eq!(safe[CONTENT_ENCODING], "gzip");
         assert!(!safe.contains_key("server"));
+    }
+
+    #[test]
+    fn configured_private_cidr_is_allowed_but_loopback_is_not() {
+        let policy = HlsPolicy::new(
+            Vec::<String>::new(),
+            vec!["10.223.0.0/16".to_owned()],
+            Arc::new(TestResolver),
+        );
+        assert!(policy.is_ok());
+        let Some(policy) = policy.ok() else {
+            return;
+        };
+        let private = Url::parse("http://10.223.1.2/live.m3u8");
+        assert!(private.is_ok());
+        if let Ok(private) = private {
+            assert!(policy.validate_url(&private).is_ok());
+        }
+        let loopback = Url::parse("http://127.0.0.1/live.m3u8");
+        assert!(loopback.is_ok());
+        if let Ok(loopback) = loopback {
+            assert!(policy.validate_url(&loopback).is_err());
+        }
     }
 
     #[test]
