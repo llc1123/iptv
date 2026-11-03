@@ -1,5 +1,7 @@
 {
   "kind": "media-server-integration",
+  "parent_commit": "a2a8489",
+  "head_commit": "a2a8489",
   "status": "deterministic",
   "network": "offline-default",
   "events": [
@@ -14,6 +16,8 @@
     "bounded-request-response",
     "provider-shutdown-join",
     "forbidden-reporting-absent",
-    "route-admission-after-shutdown"
+    "route-admission-after-shutdown",
+    "todo-17-no-proxy-client",
+    "todo-17-published-snapshot-feed-bytes"
   ]
 }

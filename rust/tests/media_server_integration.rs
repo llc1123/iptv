@@ -25,6 +25,7 @@ use iptv_media_server::http::{
 };
 use iptv_media_server::lifecycle::{CancellationToken, Lifecycle};
 use iptv_media_server::refresh::{EpgMetadataSource, RefreshEngine, RefreshEngineConfig};
+use iptv_media_server::render::{BaseUrl, RenderKind};
 use iptv_media_server::snapshot::{LogoView, Snapshot, SnapshotStore};
 use reqwest::Url;
 use ring::digest::{SHA256, digest};
@@ -300,14 +301,52 @@ async fn refresh_engine_publishes_snapshot_health_and_feed_from_mock_provider()
         .map_err(|error| format!("refresh failed: {error:?}"))?;
     assert_eq!(outcome.generation, 1);
     assert!(health.snapshot().await.ready);
-    assert_eq!(
-        snapshots
-            .load()?
-            .ok_or("missing refresh snapshot")?
-            .channels()[0]
-            .channel_id,
-        "c1"
-    );
+    let published = snapshots.load()?.ok_or("missing refresh snapshot")?;
+    assert_eq!(published.channels()[0].channel_id, "c1");
+    let app = AppState::from_parts(AppStateParts {
+        lifecycle: Lifecycle::new(),
+        snapshots: snapshots.clone(),
+        health,
+        playback: Arc::new(Playback),
+        hls: Arc::new(Forwarder {
+            calls: AtomicUsize::new(0),
+        }),
+        tokens: Arc::new(TokenStore::new(
+            Arc::new(FixedTokenClock),
+            Arc::new(FixedTokenFactory),
+        )),
+        logos: None,
+        clock: Arc::new(FixedEpoch),
+    });
+    let base = BaseUrl::parse("http://fixture.example")?;
+    let expected_m3u = published
+        .render_cached(
+            RenderKind::M3u,
+            &base,
+            Some(&app.lifecycle().cancellation_token()),
+        )
+        .await?;
+    let expected_xmltv = published
+        .render_cached(
+            RenderKind::Xmltv,
+            &base,
+            Some(&app.lifecycle().cancellation_token()),
+        )
+        .await?;
+    let m3u = to_bytes(
+        request(&app, "GET", "/channels.m3u").await?.into_body(),
+        1024 * 1024,
+    )
+    .await?;
+    let xmltv = to_bytes(
+        request(&app, "GET", "/xmltv.xml").await?.into_body(),
+        1024 * 1024,
+    )
+    .await?;
+    assert_eq!(m3u.as_ref(), expected_m3u.as_ref());
+    assert_eq!(xmltv.as_ref(), expected_xmltv.as_ref());
+    assert!(m3u.windows(b"c1".len()).any(|window| window == b"c1"));
+    assert!(xmltv.windows(b"c1".len()).any(|window| window == b"c1"));
     provider.shutdown().await?;
     Ok(())
 }
@@ -377,7 +416,9 @@ async fn mock_provider_shutdown_rejects_new_work_and_joins_listener()
     let provider = MockProvider::start().await?;
     let origin = provider.origin().to_owned();
     provider.shutdown().await?;
-    let error = reqwest::Client::new()
+    let error = reqwest::Client::builder()
+        .no_proxy()
+        .build()?
         .get(origin)
         .send()
         .await
