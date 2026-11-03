@@ -14,7 +14,7 @@ command -v rustup >/dev/null 2>&1 || { printf 'REFUSE: rustup unavailable\n'; ex
 command -v python3 >/dev/null 2>&1 || { printf 'REFUSE: python3 unavailable\n'; exit 2; }
 command -v timeout >/dev/null 2>&1 || { printf 'REFUSE: timeout unavailable\n'; exit 2; }
 mkdir -p var/bench
-tmp=$(mktemp -d)
+tmp=$(mktemp -d var/bench/.mock-bench.XXXXXX)
 chmod 700 "$tmp"
 report_tmp="$tmp/report.json"
 output='var/bench/mock-report.json'

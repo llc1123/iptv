@@ -118,7 +118,7 @@ The install command is preparation only. `bash scripts/verify.sh` refuses a
 missing lockfile, generator, fixture directory, pinned toolchain, or ignored
 Rust target directory. From any working directory it returns to the repository
 root and runs these gates in order: pinned rustfmt check; locked Cargo check;
-locked all-target/all-feature tests; strict all-target/all-feature clippy with
+locked tests, binaries, and examples with all features; strict all-target/all-feature clippy with
 warnings denied; two offline `uv` generator checks with stable fixture hashes;
 and a locked release build. The generator is run with `--check`, so tracked
 fixtures are never rewritten. `rust/Cargo.lock` is committed and must remain
@@ -131,7 +131,7 @@ bash scripts/test-mock.sh
 ```
 
 It runs `rustup run 1.87.0 cargo test --offline --manifest-path
-rust/Cargo.toml --locked --all-targets --all-features`. It does not start a
+rust/Cargo.toml --locked --tests --bins --examples --all-features`. It does not start a
 provider, contact the network, install packages, or require DHCP capabilities.
 
 ## Opt-in Rust mock benchmark
