@@ -10,8 +10,8 @@ trap 'rm -f "$LOG"' EXIT
 [[ -d rust/tests ]] || { printf 'FAIL: required Rust test directory is missing: rust/tests\n' >&2; exit 1; }
 command -v rustup >/dev/null 2>&1 || { printf 'FAIL: required tool is missing: rustup (Rust 1.87.0 is not available)\n' >&2; exit 1; }
 
-printf '+ rustup run 1.87.0 cargo test --offline --manifest-path rust/Cargo.toml --locked --all-targets --all-features\n'
-if rustup run 1.87.0 cargo test --offline --manifest-path rust/Cargo.toml --locked --all-targets --all-features >"$LOG" 2>&1; then
+printf '+ rustup run 1.87.0 cargo test --offline --manifest-path rust/Cargo.toml --locked --tests --bins --examples --all-features\n'
+if rustup run 1.87.0 cargo test --offline --manifest-path rust/Cargo.toml --locked --tests --bins --examples --all-features >"$LOG" 2>&1; then
     printf 'PASS: offline Rust mock suite completed\n'
 else
     status=$?

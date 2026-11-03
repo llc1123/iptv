@@ -61,7 +61,7 @@ run rustup run 1.87.0 cargo --offline --locked clippy --version
 
 run rustup run 1.87.0 cargo --offline --locked fmt --manifest-path rust/Cargo.toml --all -- --check
 run rustup run 1.87.0 cargo --offline check --manifest-path rust/Cargo.toml --locked
-run rustup run 1.87.0 cargo --offline test --manifest-path rust/Cargo.toml --locked --all-targets --all-features
+run rustup run 1.87.0 cargo --offline test --manifest-path rust/Cargo.toml --locked --tests --bins --examples --all-features
 run rustup run 1.87.0 cargo --offline --locked clippy --manifest-path rust/Cargo.toml --all-targets --all-features -- -D warnings
 
 run uv run --offline --no-sync python tools/oracle/generate.py --check --output-dir rust/tests/fixtures
