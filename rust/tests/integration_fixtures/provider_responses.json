@@ -1,0 +1,5 @@
+{
+  "fixture_family": "media-server-integration",
+  "version": 1,
+  "responses": ["authentication", "channels", "categories", "programmes", "tvod"]
+}

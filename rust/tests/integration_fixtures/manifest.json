@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "name": "provider_responses.json",
+      "sha256": "fa270c14bc3b6a6803b24dde56b8d7030463fdeb264802782a919e1d004280f2",
+      "size": 150
+    }
+  ]
+}
