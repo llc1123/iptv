@@ -236,11 +236,24 @@ impl<R: Resolver + 'static> HlsPolicy<R> {
         if port == 0 {
             return Err(HlsPolicyError::InvalidTarget);
         }
+        if let Ok(ip) = host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+        {
+            if unconditionally_unsafe_ip(ip) {
+                return Err(HlsPolicyError::DisallowedTarget);
+            }
+        }
         if self.host_allowed(url)? {
             return Ok(());
         }
-        if let Ok(ip) = host.parse::<IpAddr>() {
-            if self.cidrs.iter().any(|cidr| cidr.contains(ip)) && !unconditionally_unsafe_ip(ip) {
+        if let Ok(ip) = host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+        {
+            if self.cidrs.iter().any(|cidr| cidr.contains(ip)) {
                 return Ok(());
             }
         }
@@ -266,7 +279,11 @@ impl<R: Resolver + 'static> HlsPolicy<R> {
             .port_or_known_default()
             .ok_or(HlsPolicyError::InvalidTarget)?;
         let host_allowed = self.host_allowed(url)?;
-        if let Ok(ip) = host.parse::<IpAddr>() {
+        if let Ok(ip) = host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<IpAddr>()
+        {
             return if unconditionally_unsafe_ip(ip) {
                 Err(HlsPolicyError::DisallowedTarget)
             } else {
@@ -491,7 +508,7 @@ fn unconditionally_unsafe_ip(ip: IpAddr) -> bool {
                 || value.is_unspecified()
                 || value.is_multicast()
                 || value.is_unique_local()
-                || value.segments()[0] == 0xfe80
+                || value.is_unicast_link_local()
                 || value.to_ipv4_mapped().is_some()
         }
     }
@@ -616,6 +633,45 @@ mod tests {
         assert!(loopback.is_ok());
         if let Ok(loopback) = loopback {
             assert!(policy.validate_url(&loopback).is_err());
+        }
+    }
+
+    #[test]
+    fn full_ipv6_link_local_range_is_rejected_even_when_allowlisted() {
+        let policy = HlsPolicy::new(
+            vec![
+                "[fe80::1]".to_owned(),
+                "[fe81::1]".to_owned(),
+                "[febf::1]".to_owned(),
+            ],
+            vec!["fe80::/10".to_owned()],
+            Arc::new(TestResolver),
+        );
+        assert!(policy.is_ok());
+        let Some(policy) = policy.ok() else {
+            return;
+        };
+
+        for host in ["fe80::1", "fe81::1", "febf::1"] {
+            let url = Url::parse(&format!("http://[{host}]/live.m3u8"));
+            assert!(url.is_ok());
+            if let Ok(url) = url {
+                assert_eq!(
+                    policy.validate_url(&url),
+                    Err(HlsPolicyError::DisallowedTarget),
+                    "{host} must remain denied despite host and CIDR allowlists"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fec0_is_not_classified_as_ipv6_link_local() {
+        let address = "fec0::1".parse::<std::net::Ipv6Addr>();
+        assert!(address.is_ok());
+        if let Ok(address) = address {
+            assert!(!address.is_unicast_link_local());
+            assert!(!unconditionally_unsafe_ip(IpAddr::V6(address)));
         }
     }
 
