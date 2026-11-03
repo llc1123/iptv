@@ -222,7 +222,8 @@ impl Drop for Fixture {
 #[tokio::test]
 async fn fixture_declares_only_scoped_routes() {
     let contract: Value =
-        serde_json::from_str(include_str!("fixtures/http_contract.json")).expect("contract json");
+        serde_json::from_str(include_str!("integration_fixtures/http_contract.json"))
+            .expect("contract json");
     let routes = contract["routes"].as_array().expect("routes");
     let paths = routes
         .iter()
