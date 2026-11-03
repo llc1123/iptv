@@ -29,7 +29,7 @@ fi
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 printf 'RUN: anonymous user and network namespace focused policy test\n'
-exec unshare --user --map-root-user --net --mount-proc -- bash -c '
+exec unshare --user --map-root-user --net -- bash -c '
     set -Eeuo pipefail
     ip link set lo up
     rustup run 1.87.0 cargo test --offline --manifest-path rust/Cargo.toml --locked --test media_server_integration public_routes_cover_feeds_playback_tokens_head_405_404_and_shutdown -- --test-threads=1
