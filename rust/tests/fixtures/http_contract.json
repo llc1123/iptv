@@ -6,11 +6,11 @@
     {"method": "GET", "path": "/xmltv.xml", "head": true},
     {"method": "GET", "path": "/logos/{channel_id}", "head": true},
     {"method": "GET", "path": "/stream/{channel_id}", "head": true},
+    {"method": "GET", "path": "/replay/{channel_id}/{programme_id}", "head": true},
+    {"method": "GET", "path": "/catchup/{channel_id}", "head": true},
     {"method": "GET", "path": "/_hls/{*rest}", "head": true}
   ],
   "deferred": [
-    "/replay/{channel_id}",
-    "/catchup/{channel_id}",
     "/metadata/sync",
     "/heartbeat",
     "/report"

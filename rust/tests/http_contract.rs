@@ -15,7 +15,7 @@ use axum::http::header::{
 };
 use axum::http::{Request, StatusCode};
 use futures_util::stream;
-use iptv_media_server::epg::models::BootChannel;
+use iptv_media_server::epg::models::{BootChannel, Programme};
 use iptv_media_server::guide::GuideZone;
 use iptv_media_server::health::HealthState;
 use iptv_media_server::hls::TokenStore;
@@ -42,6 +42,7 @@ impl EpochClock for FixedClock {
 
 struct FakePlayback {
     calls: AtomicUsize,
+    replay_calls: AtomicUsize,
 }
 
 impl PlaybackResolver for FakePlayback {
@@ -49,6 +50,18 @@ impl PlaybackResolver for FakePlayback {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async {
             Url::parse("http://upstream.invalid/live.m3u8").map_err(|_| PlaybackError::Unavailable)
+        })
+    }
+
+    fn resolve_replay<'a>(
+        &'a self,
+        _programme: &'a Programme,
+        _cancellation: iptv_media_server::lifecycle::CancellationToken,
+    ) -> PlaybackFuture<'a> {
+        self.replay_calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Url::parse("http://upstream.invalid/replay.m3u8")
+                .map_err(|_| PlaybackError::Unavailable)
         })
     }
 }
@@ -130,7 +143,13 @@ impl Fixture {
         let snapshot = Snapshot::new(
             1,
             vec![channel.clone()],
-            Vec::new(),
+            vec![Programme {
+                title: "One programme".to_owned(),
+                start_time_ms: 0,
+                end_time_ms: 10_000,
+                programme_id: "p/1".to_owned(),
+                channel_id: "c1".to_owned(),
+            }],
             LogoView::from_channels(&[channel]),
             GuideZone::Fixed { offset_minutes: 0 },
             0,
@@ -157,6 +176,7 @@ impl Fixture {
         };
         let playback = Arc::new(FakePlayback {
             calls: AtomicUsize::new(0),
+            replay_calls: AtomicUsize::new(0),
         });
         let forwarder = Arc::new(FakeForwarder {
             calls: AtomicUsize::new(0),
@@ -216,11 +236,13 @@ async fn fixture_declares_only_scoped_routes() {
             "/xmltv.xml",
             "/logos/{channel_id}",
             "/stream/{channel_id}",
+            "/replay/{channel_id}/{programme_id}",
+            "/catchup/{channel_id}",
             "/_hls/{*rest}"
         ]
     );
-    assert!(!paths.iter().any(|path| path.contains("replay")));
-    assert!(!paths.iter().any(|path| path.contains("catchup")));
+    assert!(paths.iter().any(|path| path.contains("replay")));
+    assert!(paths.iter().any(|path| path.contains("catchup")));
 }
 
 #[tokio::test]
@@ -311,6 +333,45 @@ async fn logo_live_head_and_method_contracts_are_fixed() {
     assert_eq!(
         fixture.request("GET", "/missing").await.status(),
         StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn replay_and_catchup_use_one_snapshot_and_forward_only_valid_matches() {
+    let fixture = Fixture::new(false);
+
+    let replay = fixture.request("GET", "/replay/c1/p%2F1.m3u8").await;
+    assert_eq!(replay.status(), StatusCode::OK);
+    assert_eq!(fixture.playback.replay_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.forwarder.calls.load(Ordering::SeqCst), 1);
+
+    let fallback = fixture.request("GET", "/catchup/c1?utc=&start=1").await;
+    assert_eq!(fallback.status(), StatusCode::OK);
+    assert_eq!(fixture.playback.replay_calls.load(Ordering::SeqCst), 2);
+
+    let end = fixture.request("GET", "/catchup/c1?utc=10").await;
+    assert_eq!(end.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(fixture.playback.replay_calls.load(Ordering::SeqCst), 2);
+
+    let legacy = fixture.request("GET", "/stream/c1.m3u8?utc=1").await;
+    assert_eq!(legacy.status(), StatusCode::OK);
+    assert_eq!(fixture.playback.replay_calls.load(Ordering::SeqCst), 3);
+    assert_eq!(fixture.playback.calls.load(Ordering::SeqCst), 0);
+
+    let unknown = fixture.request("GET", "/catchup/unknown?utc=1").await;
+    assert_eq!(unknown.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(fixture.playback.replay_calls.load(Ordering::SeqCst), 3);
+
+    assert_eq!(
+        fixture
+            .request("HEAD", "/replay/c1/p%2F1.m3u8")
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        fixture.request("POST", "/catchup/c1?utc=1").await.status(),
+        StatusCode::METHOD_NOT_ALLOWED
     );
 }
 

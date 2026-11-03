@@ -12,6 +12,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use crate::error::{AppError, RequestError};
+use crate::guide::parse_catchup_start;
 use crate::hls::RequestHeaders;
 use crate::lifecycle::RequestGuard;
 use crate::render::{BaseUrl, RenderKind};
@@ -23,6 +24,8 @@ const NO_CACHE: [(&str, &str); 3] = [
     ("pragma", "no-cache"),
     ("expires", "0"),
 ];
+const MAX_ROUTE_COMPONENT_BYTES: usize = 1024;
+const MAX_RAW_QUERY_BYTES: usize = 4096;
 
 /// Returns the health projection at the injected clock instant.
 pub async fn healthz(State(state): State<AppState>) -> Response {
@@ -140,14 +143,138 @@ pub async fn stream(
     Extension(admission): Extension<Arc<RequestGuard>>,
     request: Request,
 ) -> Response {
-    let channel_id = match channel_id.strip_suffix(".m3u8") {
-        Some(value) => value,
-        None => channel_id.as_str(),
+    let Some(channel_id) = route_component(&channel_id) else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
     };
-    let Ok(url) = state.playback.resolve_live(channel_id).await else {
+    if let Some(query) = request.uri().query() {
+        match legacy_catchup_start(query) {
+            Ok(Some(start)) => {
+                return replay_at(&state, channel_id, start, admission, request).await;
+            }
+            Ok(None) => {}
+            Err(()) => return error_response(AppError::Request(RequestError::EpgReplay)),
+        }
+    }
+    let Ok(url) = state.playback.resolve_live(&channel_id).await else {
         return error_response(AppError::Request(RequestError::EpgHttp));
     };
     forward(&state, request, admission, HlsTarget::Url(url)).await
+}
+
+/// Resolves one exact programme and forwards its TVOD playlist.
+pub async fn replay(
+    State(state): State<AppState>,
+    Path((channel_id, programme_id)): Path<(String, String)>,
+    Extension(admission): Extension<Arc<RequestGuard>>,
+    request: Request,
+) -> Response {
+    let Some(channel_id) = route_component(&channel_id) else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    let Some(programme_id) = route_component(&programme_id) else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    let Ok(Some(snapshot)) = state.snapshots.load() else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    if !snapshot
+        .channels()
+        .iter()
+        .any(|channel| channel.channel_id == channel_id)
+    {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    }
+    let Some(programme) = snapshot
+        .programme_index()
+        .by_id(&channel_id, &programme_id)
+        .cloned()
+    else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    resolve_and_forward(&state, programme, admission, request).await
+}
+
+/// Resolves the programme covering a form-encoded catch-up instant.
+pub async fn catchup(
+    State(state): State<AppState>,
+    Path(channel_id): Path<String>,
+    Extension(admission): Extension<Arc<RequestGuard>>,
+    request: Request,
+) -> Response {
+    let Some(channel_id) = route_component(&channel_id) else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    let query = request.uri().query().unwrap_or_default();
+    let Ok(Some(value)) = catchup_query_value(query) else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    let Ok(Some(snapshot)) = state.snapshots.load() else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    if !snapshot
+        .channels()
+        .iter()
+        .any(|channel| channel.channel_id == channel_id)
+    {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    }
+    let Ok(start) = parse_catchup_start(&value, snapshot.guide_zone()) else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    let Some(programme) = snapshot
+        .programme_index()
+        .covering(&channel_id, start)
+        .cloned()
+    else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    resolve_and_forward(&state, programme, admission, request).await
+}
+
+async fn replay_at(
+    state: &AppState,
+    channel_id: String,
+    start: String,
+    admission: Arc<RequestGuard>,
+    request: Request,
+) -> Response {
+    let Ok(Some(snapshot)) = state.snapshots.load() else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    if !snapshot
+        .channels()
+        .iter()
+        .any(|channel| channel.channel_id == channel_id)
+    {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    }
+    let Ok(timestamp) = parse_catchup_start(&start, snapshot.guide_zone()) else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    let Some(programme) = snapshot
+        .programme_index()
+        .covering(&channel_id, timestamp)
+        .cloned()
+    else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    resolve_and_forward(state, programme, admission, request).await
+}
+
+async fn resolve_and_forward(
+    state: &AppState,
+    programme: crate::epg::Programme,
+    admission: Arc<RequestGuard>,
+    request: Request,
+) -> Response {
+    let Ok(url) = state
+        .playback
+        .resolve_replay(&programme, state.lifecycle.cancellation_token())
+        .await
+    else {
+        return error_response(AppError::Request(RequestError::EpgReplay));
+    };
+    forward(state, request, admission, HlsTarget::Url(url)).await
 }
 
 /// Resolves a full captured token and forwards its HLS response.
@@ -243,4 +370,115 @@ fn header_text(value: Option<&HeaderValue>) -> Option<String> {
     value
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned)
+}
+
+fn route_component(value: &str) -> Option<String> {
+    let value = value.strip_suffix(".m3u8").unwrap_or(value);
+    if value.is_empty()
+        || value.len() > MAX_ROUTE_COMPONENT_BYTES
+        || value.chars().any(char::is_control)
+        || value.contains('\\')
+    {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+fn legacy_catchup_start(query: &str) -> Result<Option<String>, ()> {
+    let (utc, _) = parse_query(query)?;
+    Ok(utc.filter(|value| !value.is_empty()))
+}
+
+fn catchup_query_value(query: &str) -> Result<Option<String>, ()> {
+    let (utc, start) = parse_query(query)?;
+    Ok(utc
+        .filter(|value| !value.is_empty())
+        .or_else(|| start.filter(|value| !value.is_empty())))
+}
+
+fn parse_query(query: &str) -> Result<(Option<String>, Option<String>), ()> {
+    if query.len() > MAX_RAW_QUERY_BYTES {
+        return Err(());
+    }
+    let mut utc = None;
+    let mut start = None;
+    for pair in query.split('&') {
+        let (raw_key, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = form_decode(raw_key)?;
+        let value = form_decode(raw_value)?;
+        match key.as_str() {
+            "utc" if utc.is_none() => utc = Some(value),
+            "start" if start.is_none() => start = Some(value),
+            _ => {}
+        }
+    }
+    Ok((utc, start))
+}
+
+fn form_decode(value: &str) -> Result<String, ()> {
+    let mut decoded = Vec::with_capacity(value.len());
+    let mut bytes = value.as_bytes().iter().copied();
+    while let Some(byte) = bytes.next() {
+        match byte {
+            b'+' => decoded.push(b' '),
+            b'%' => {
+                let high = bytes.next().ok_or(())?;
+                let low = bytes.next().ok_or(())?;
+                decoded.push((hex_digit(high)? << 4) | hex_digit(low)?);
+            }
+            value => decoded.push(value),
+        }
+    }
+    let decoded = String::from_utf8(decoded).map_err(|_| ())?;
+    if decoded.chars().any(char::is_control) {
+        return Err(());
+    }
+    Ok(decoded)
+}
+
+fn hex_digit(value: u8) -> Result<u8, ()> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'A'..=b'F' => Ok(value - b'A' + 10),
+        _ => Err(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{catchup_query_value, form_decode, legacy_catchup_start, route_component};
+
+    #[test]
+    fn query_uses_first_occurrence_and_form_semantics() {
+        assert_eq!(
+            catchup_query_value("utc=&utc=2&start=1").ok().flatten(),
+            Some("1".to_owned())
+        );
+        assert_eq!(
+            catchup_query_value("start=1&utc=2&start=3").ok().flatten(),
+            Some("2".to_owned())
+        );
+        assert_eq!(
+            legacy_catchup_start("utc=1&start=2").ok().flatten(),
+            Some("1".to_owned())
+        );
+        assert_eq!(
+            form_decode("2024-01-01T00%3A00%3A00%2B08%3A00"),
+            Ok("2024-01-01T00:00:00+08:00".to_owned())
+        );
+    }
+
+    #[test]
+    fn query_and_components_are_bounded_and_reject_controls() {
+        assert!(catchup_query_value(&"x".repeat(4097)).is_err());
+        assert!(form_decode("bad%00").is_err());
+        assert!(route_component("").is_none());
+        assert_eq!(route_component("p%2F1.m3u8"), Some("p%2F1".to_owned()));
+        assert_eq!(route_component("p/1.m3u8"), Some("p/1".to_owned()));
+        assert_eq!(
+            route_component("p/1.m3u8.m3u8"),
+            Some("p/1.m3u8".to_owned())
+        );
+    }
 }

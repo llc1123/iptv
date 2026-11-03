@@ -35,6 +35,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/xmltv.xml", get(handlers::xmltv))
         .route("/logos/{channel_id}", get(handlers::logo))
         .route("/stream/{channel_id}", get(handlers::stream))
+        .route("/replay/{channel_id}/{programme_id}", get(handlers::replay))
+        .route("/catchup/{channel_id}", get(handlers::catchup))
         .route("/_hls/{*rest}", get(handlers::hls_resource))
         .layer(middleware::from_fn_with_state(state.clone(), admit))
         .with_state(state.clone());
