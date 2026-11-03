@@ -30,6 +30,12 @@ impl StartupGate {
     pub const fn port(&self) -> &PortGuard {
         &self.port
     }
+
+    /// Transfers the lock and retained listener to the serving boundary.
+    #[must_use]
+    pub fn into_parts(self) -> (InstanceLock, PortGuard) {
+        (self.lock, self.port)
+    }
 }
 
 /// Acquires startup resources in preflight, lock, listener order.
