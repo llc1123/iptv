@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "iptv-media-server"
 path = "src/main.rs"
 
+[[bench]]
+name = "media_server"
+harness = false
+
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 chrono = { version = "=0.4.44", default-features = false, features = ["clock", "std"] }
