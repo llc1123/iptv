@@ -134,6 +134,38 @@ It runs `rustup run 1.87.0 cargo test --offline --manifest-path
 rust/Cargo.toml --locked --all-targets --all-features`. It does not start a
 provider, contact the network, install packages, or require DHCP capabilities.
 
+## Opt-in real E2E gate
+
+The real E2E gate is deliberately excluded from `scripts/verify.sh` and
+`scripts/test-mock.sh`. It is an explicit, non-default gate for a future
+working Rust server only:
+
+```bash
+IPTV_ENABLE_REAL_E2E=1 bash scripts/test-real-e2e.sh
+```
+
+When enabled, the gate requires Linux, the required local tooling, and a
+regular owner-readable `var/iptv-e2e.env` file with mode `600` (or stricter).
+That file is parsed as quoted data, never sourced. Only the allowlisted IPTV
+assignments are accepted; duplicate, unknown, malformed, empty, placeholder,
+unsafe-expansion, and caller-provided credential values are refused. Values
+are never printed. The gate binds the future server to localhost, uses an
+isolated mode-`700` temporary directory, passes only an explicit environment
+allowlist through `env -i`, applies a fixed 300-second deadline, and cleans up
+the process group with one grace/escalation path. It does not use `sudo`,
+`ip`, `unshare`, a fixed external port, raw DHCP, or a live provider.
+
+The current Rust `main` is still a scaffold without startup, so an enabled
+invocation returns `REFUSE` before creating mutable network state. Outcomes are
+`SKIP` (unset opt-in), `REFUSE` (unsafe, unsupported, or unavailable
+prerequisite), `FAIL` (server failure), `TIMEOUT` (the 300-second deadline),
+and `CLEANUP_FAILURE` (cleanup could not complete). Run the offline parser and
+classification checks with:
+
+```bash
+bash scripts/test-real-e2e-selftest.sh
+```
+
 Release hygiene is local and explicit: review `git status --short` and
 `git diff --check` before staging; publish source, templates, the tracked
 `rust/Cargo.lock`, and deterministic fixtures only. Keep `rust/target/`, local
