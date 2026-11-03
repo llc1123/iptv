@@ -340,8 +340,12 @@ async fn public_routes_cover_feeds_playback_tokens_head_405_404_and_shutdown()
     );
     let replay = request(&app, "GET", "/replay/c1/p1").await?;
     assert_eq!(replay.status(), StatusCode::OK);
+    let catchup = request(&app, "GET", "/catchup/c1?utc=1000").await?;
+    assert_eq!(catchup.status(), StatusCode::OK);
     let live = request(&app, "GET", "/stream/c1").await?;
     assert_eq!(live.status(), StatusCode::OK);
+    let legacy = request(&app, "GET", "/stream/c1?utc=1000").await?;
+    assert_eq!(legacy.status(), StatusCode::OK);
     let registered = tokens
         .register("http://media.example.test/a.m3u8", "")
         .map_err(|error| format!("token registration: {error:?}"))?;
