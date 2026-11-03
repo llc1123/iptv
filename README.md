@@ -134,6 +134,35 @@ It runs `rustup run 1.87.0 cargo test --offline --manifest-path
 rust/Cargo.toml --locked --all-targets --all-features`. It does not start a
 provider, contact the network, install packages, or require DHCP capabilities.
 
+## Opt-in Rust mock benchmark
+
+The repeatable mock benchmark is separate from verification and tests. It uses
+`AppState`, `build_router`, the snapshot render cache, playlist rewriting, and
+HLS token registration through `tower::ServiceExt::oneshot`; it opens no
+sockets and contacts no provider. The workload is exactly 1,000 streams,
+1,000 channels, 1,000 programmes, 5,000 bounded in-memory token resources,
+and 4,000,000 logical bits per second. The 10-second warmup and 60-second
+measurement window are workload metadata; the benchmark issues the exact
+120,000 XMLTV requests without sleeping, so host scheduling does not add a
+fixed wait to local verification.
+
+Run it only when the opt-in is explicit:
+
+```bash
+IPTV_ENABLE_MOCK_BENCH=1 bash scripts/bench-mock.sh
+```
+
+The wrapper writes the redacted machine-readable report to
+`var/bench/mock-report.json` atomically. Its stdout classification is `PASS`,
+`SKIP`, `REFUSE`, `FAIL`, `TIMEOUT`, or `CLEANUP_FAILURE`; unset opt-in is
+`SKIP`, and any value other than `1` is `REFUSE` with exit 2. The report schema
+is version 1 and contains fixed workload counts, SHA-256 digests of bounded
+input/output bodies, sorted integer-nanosecond p50/p95/p99/max timing values,
+request/error/disconnect counts, `/proc/self/status` RSS observations, and
+stable failure codes. It excludes timestamps, PIDs, paths, URLs, tokens,
+credentials, and raw diagnostics. Timing and RSS thresholds are host-sensitive
+and the bitrate is logical only; no physical media is generated.
+
 ## Opt-in real E2E gate
 
 The real E2E gate is deliberately excluded from `scripts/verify.sh` and
