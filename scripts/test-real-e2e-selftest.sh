@@ -19,6 +19,7 @@ assert_status() {
 }
 
 [[ "$(assert_status 0 env -u IPTV_ENABLE_REAL_E2E "$GATE")" == SKIP:* ]] || exit 1
+[[ "$(assert_status 2 env IPTV_ENABLE_REAL_E2E= "$GATE")" == REFUSE:* ]] || exit 1
 [[ "$(assert_status 2 env IPTV_ENABLE_REAL_E2E=0 "$GATE")" == REFUSE:* ]] || exit 1
 
 mkdir -p "$TMP/scripts" "$TMP/var" "$TMP/rust/src"
@@ -50,6 +51,13 @@ IPTV_INTERFACE='lo'" 'duplicate assignment'
 run_env_case "IPTV_INTERFACE='\$(touch $TMP/marker)'" 'unsafe expansion syntax'
 run_env_case "IPTV_INTERFACE='lo'
 IPTV_DHCP_USER='secret-value'" 'missing a required assignment'
+run_env_case "IPTV_INTERFACE='lo'
+IPTV_DHCP_USER='dhcp-user'
+IPTV_DHCP_PASSWORD='dhcp-password'
+IPTV_USER_ID='user-id'
+IPTV_PASSWORD='epg-password'
+IPTV_STB_ID_PREFIX='stb-prefix'
+IPTV_AUTH_URL='http://your-eds-host:port/EDS/jsp/AuthenticationURL'" 'placeholder value'
 
 [[ ! -e "$TMP/marker" ]] || { printf 'FAIL: command substitution executed\n' >&2; exit 1; }
 

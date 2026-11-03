@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-case "${IPTV_ENABLE_REAL_E2E:-}" in
+if [[ -z "${IPTV_ENABLE_REAL_E2E+x}" ]]; then
+    printf 'SKIP: set IPTV_ENABLE_REAL_E2E=1 to run the real E2E gate\n'
+    exit 0
+fi
+case "$IPTV_ENABLE_REAL_E2E" in
     "")
-        printf 'SKIP: set IPTV_ENABLE_REAL_E2E=1 to run the real E2E gate\n'
-        exit 0
+        printf 'REFUSE: IPTV_ENABLE_REAL_E2E must equal exactly 1\n' >&2
+        exit 2
         ;;
     1) ;;
     *)
@@ -51,6 +55,9 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -n "$value" ]] || refuse 'env file contains an empty value'
     [[ "$value" != *'$'* && "$value" != *'`'* && "$value" != *'\\'* ]] || refuse 'env file contains unsafe expansion syntax'
     case "$value" in
+        http://your-eds-host:port/*|https://your-eds-host:port/*)
+            refuse 'env file contains a placeholder value'
+            ;;
         your-*|YOUR-*|changeme|CHANGEME|example|EXAMPLE|placeholder|PLACEHOLDER|test|TEST)
             refuse 'env file contains a placeholder value'
             ;;
@@ -61,11 +68,6 @@ done < "$ENV_FILE"
 for required in IPTV_INTERFACE IPTV_DHCP_USER IPTV_DHCP_PASSWORD IPTV_USER_ID IPTV_PASSWORD IPTV_STB_ID_PREFIX IPTV_AUTH_URL; do
     [[ -n "${CONFIG[$required]+x}" ]] || refuse 'env file is missing a required assignment'
 done
-
-[[ -x "$SERVER" ]] || refuse 'Rust server executable is unavailable; startup is not implemented'
-[[ -f "$ROOT/rust/src/main.rs" ]] || refuse 'Rust startup source is unavailable'
-grep -Fq 'startup is not implemented' "$ROOT/rust/src/main.rs" &&
-    refuse 'Rust server startup is not implemented'
 
 RUN_DIR=''
 SERVER_PID=''
@@ -88,6 +90,11 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+[[ -x "$SERVER" ]] || refuse 'Rust server executable is unavailable; startup is not implemented'
+[[ -f "$ROOT/rust/src/main.rs" ]] || refuse 'Rust startup source is unavailable'
+grep -Fq 'startup is not implemented' "$ROOT/rust/src/main.rs" &&
+    refuse 'Rust server startup is not implemented'
 
 RUN_DIR=$(mktemp -d)
 chmod 700 "$RUN_DIR"
