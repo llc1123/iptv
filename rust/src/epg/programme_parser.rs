@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use super::models::{Programme, ProgrammeResponse};
+use super::models::{Programme, ProgrammeResponse, TvodAddress};
 
 /// Typed programme parser error.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,13 +79,40 @@ pub fn tvod_times_seconds(programme: &Programme) -> Result<(i64, i64), Programme
     Ok((start, end))
 }
 
+/// Parses a provider TVOD response and returns its playback address.
+///
+/// # Errors
+/// Returns [`ProgrammeParserErrorKind::InvalidJson`] for malformed response data or
+/// [`ProgrammeParserErrorKind::ProviderStatus`] when the provider did not succeed.
+pub fn parse_tvod(body: &str) -> Result<TvodAddress, ProgrammeParserError> {
+    let response =
+        serde_json::from_str::<serde_json::Value>(body).map_err(|_| ProgrammeParserError {
+            operation: "epg-tvod",
+            kind: ProgrammeParserErrorKind::InvalidJson,
+        })?;
+    if response.get("status").and_then(serde_json::Value::as_str) != Some("1") {
+        return Err(ProgrammeParserError {
+            operation: "epg-tvod",
+            kind: ProgrammeParserErrorKind::ProviderStatus,
+        });
+    }
+    serde_json::from_value(response.get("data").cloned().ok_or(ProgrammeParserError {
+        operation: "epg-tvod",
+        kind: ProgrammeParserErrorKind::InvalidJson,
+    })?)
+    .map_err(|_| ProgrammeParserError {
+        operation: "epg-tvod",
+        kind: ProgrammeParserErrorKind::InvalidJson,
+    })
+}
+
 #[cfg(test)]
 #[expect(
     clippy::expect_used,
     reason = "parser tests use fixed valid fixture inputs"
 )]
 mod tests {
-    use super::{ProgrammeParserErrorKind, parse_programmes, tvod_times_seconds};
+    use super::{ProgrammeParserErrorKind, parse_programmes, parse_tvod, tvod_times_seconds};
 
     #[test]
     fn empty_programme_code_returns_empty_without_status_failure() {
@@ -120,6 +147,16 @@ mod tests {
             )
             .expect_err("provider failure")
             .kind,
+            ProgrammeParserErrorKind::ProviderStatus
+        );
+        assert_eq!(
+            parse_tvod("not json").expect_err("malformed TVOD").kind,
+            ProgrammeParserErrorKind::InvalidJson
+        );
+        assert_eq!(
+            parse_tvod(r#"{"status":"0","data":{}}"#)
+                .expect_err("provider TVOD failure")
+                .kind,
             ProgrammeParserErrorKind::ProviderStatus
         );
     }

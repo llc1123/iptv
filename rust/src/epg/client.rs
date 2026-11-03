@@ -17,11 +17,13 @@ use super::session::AuthCoordinator;
 use super::session::SessionBundle;
 use super::{
     ChannelGroupSource, merge_category_groups, parse_boot_channels, parse_channel_list,
-    parse_programmes,
+    parse_programmes, parse_tvod, tvod_times_seconds,
 };
+use crate::lifecycle::CancellationToken;
 
 const CHANNELS_PATH: &str = "/EPG/jsp/getchannellistHWCU.jsp";
 const CHANNEL_AJAX_PATH: &str = "/EPG/jsp/jkjiaoyutest/en/function/ajax/epg7getChannelByAjax.jsp";
+const TVOD_RESPONSE_LIMIT: usize = 1024 * 1024;
 const LIVE_CATEGORY_ID: &str = "10000100000000090000000000001692";
 const GROUP_CATEGORIES: [(&str, &str); 7] = [
     ("catauto5122", "4K超高清"),
@@ -518,6 +520,93 @@ impl EpgClient {
         })
     }
 
+    /// Resolves one programme through the authenticated TVOD operation.
+    ///
+    /// # Errors
+    /// Returns a redacted request, provider, cancellation, or invalid playback URL error.
+    pub async fn tvod_url(
+        &self,
+        programme: &super::models::Programme,
+        shutdown: CancellationToken,
+    ) -> Result<Url, EpgError> {
+        let mut session = self.authenticate_with_shutdown(shutdown.clone()).await?;
+        for attempt in 0..2_u8 {
+            match self.fetch_tvod(&session, programme, shutdown.clone()).await {
+                Ok(address) => return validate_play_url(&address.play_url),
+                Err(error) if attempt == 0 && matches!(error.status_code(), Some(401 | 403)) => {
+                    session = self
+                        .force_reauthenticate_with_shutdown(session.generation(), shutdown.clone())
+                        .await?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(EpgError::class(
+            EpgErrorStage::Request,
+            EpgErrorClass::Transport,
+        ))
+    }
+
+    async fn fetch_tvod(
+        &self,
+        session: &SessionBundle,
+        programme: &super::models::Programme,
+        shutdown: CancellationToken,
+    ) -> Result<super::models::TvodAddress, EpgError> {
+        let path = session
+            .origin()
+            .join(CHANNEL_AJAX_PATH)
+            .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::InvalidOrigin))?;
+        let (start_time, end_time) =
+            tvod_times_seconds(programme).map_err(|error| match error.kind {
+                super::programme_parser::ProgrammeParserErrorKind::ProviderStatus => {
+                    EpgError::status(EpgErrorStage::Request, 0, 1)
+                }
+                super::programme_parser::ProgrammeParserErrorKind::InvalidJson => {
+                    EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse)
+                }
+            })?;
+        let form = [
+            ("action", "getTvodPlayUrl".to_owned()),
+            ("channelID", programme.channel_id.clone()),
+            ("playbillID", programme.programme_id.clone()),
+            ("startTime", start_time.to_string()),
+            ("endTime", end_time.to_string()),
+        ];
+        let response = tokio::select! {
+            () = shutdown.cancelled() => return Err(EpgError::cancelled(EpgErrorStage::Request)),
+            response = send_with_client_retry(
+                session.control_client(),
+                |client| {
+                    client
+                        .post(path.clone())
+                        .header("VIS-AJAX", "AjaxHttpRequest")
+                        .header("Accept", "*/*")
+                        .header("Content-Type", "application/x-www-form-urlencoded")
+                        .body(encode_form(&form))
+                },
+                &super::session::TokioSleeper,
+                EpgErrorStage::Request,
+                Arc::clone(&self.control_permits),
+                self.config.pool_timeout,
+                self.config.write_timeout,
+            ) => response?,
+        };
+        ensure_status(&response, EpgErrorStage::Request, 1)?;
+        let body = tokio::select! {
+            () = shutdown.cancelled() => return Err(EpgError::cancelled(EpgErrorStage::Request)),
+            body = bounded_response_text(response) => body?,
+        };
+        parse_tvod(&body).map_err(|error| match error.kind {
+            super::programme_parser::ProgrammeParserErrorKind::ProviderStatus => {
+                EpgError::status(EpgErrorStage::Request, 0, 1)
+            }
+            super::programme_parser::ProgrammeParserErrorKind::InvalidJson => {
+                EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse)
+            }
+        })
+    }
+
     async fn fetch_channel_category_response(
         &self,
         session: &SessionBundle,
@@ -756,6 +845,64 @@ fn ensure_status(response: &Response, stage: EpgErrorStage, attempt: u8) -> Resu
                 attempt,
             )
         })
+}
+
+async fn bounded_response_text(mut response: Response) -> Result<String, EpgError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > TVOD_RESPONSE_LIMIT as u64)
+    {
+        return Err(EpgError::class(
+            EpgErrorStage::Request,
+            EpgErrorClass::Parse,
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse))?
+    {
+        let next_length = bytes
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse))?;
+        if next_length > TVOD_RESPONSE_LIMIT {
+            return Err(EpgError::class(
+                EpgErrorStage::Request,
+                EpgErrorClass::Parse,
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse))
+}
+
+fn validate_play_url(value: &str) -> Result<Url, EpgError> {
+    let url = Url::parse(value)
+        .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::InvalidOrigin))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| EpgError::class(EpgErrorStage::Request, EpgErrorClass::InvalidOrigin))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| EpgError::class(EpgErrorStage::Request, EpgErrorClass::InvalidOrigin))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || port == 0
+        || host
+            .chars()
+            .any(|character| character.is_ascii_whitespace() || character == '\\')
+    {
+        return Err(EpgError::class(
+            EpgErrorStage::Request,
+            EpgErrorClass::InvalidOrigin,
+        ));
+    }
+    Ok(url)
 }
 
 fn final_origin(url: &Url) -> Result<Url, EpgError> {

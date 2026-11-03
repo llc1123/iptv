@@ -15,5 +15,5 @@ pub use models::{
     BootChannel, Channel, ChannelId, ChannelListResponse, EpgChannelId, HlsAddress, Programme,
     ProgrammeResponse, StbIdentitySources, TvodAddress, TvodAddressResponse,
 };
-pub use programme_parser::{parse_programmes, tvod_times_seconds};
+pub use programme_parser::{parse_programmes, parse_tvod, tvod_times_seconds};
 pub use session::{AuthCoordinator, Clock, SessionBundle, SessionClock, Sleeper};

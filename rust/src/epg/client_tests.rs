@@ -8,9 +8,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, Semaphore};
 
+use super::super::models::Programme;
 use super::super::request::send_with_client_retry;
 use super::super::session::{SessionBundle, Sleeper};
-use super::{EpgClient, EpgConfig, EpgErrorClass, EpgErrorStage};
+use super::{EpgClient, EpgConfig, EpgError, EpgErrorClass, EpgErrorStage};
+use crate::lifecycle::Lifecycle;
 
 #[tokio::test]
 async fn loopback_auth_sequence_is_single_flight_and_cookie_bound() {
@@ -253,6 +255,259 @@ async fn authentication_status_failures_do_not_retry_non_auth_requests() {
         );
         server.await.expect("server");
         assert_eq!(requests.load(Ordering::Relaxed), 1);
+    }
+}
+
+#[tokio::test]
+async fn tvod_posts_ordered_form_and_returns_validated_url() {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind loopback");
+    let address = listener.local_addr().expect("read loopback address");
+    let server = tokio::spawn(async move {
+        for index in 0..5 {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let request = read_request(&mut stream).await;
+            if index < 4 {
+                write_auth_response(index, &address.to_string(), &mut stream, &request).await;
+            } else {
+                assert!(request.contains(
+                    "POST /EPG/jsp/jkjiaoyutest/en/function/ajax/epg7getChannelByAjax.jsp HTTP/1.1"
+                ));
+                assert!(request.ends_with(
+                    "action=getTvodPlayUrl&channelID=c1&playbillID=p1&startTime=1000&endTime=2000"
+                ));
+                write_response(
+                    &mut stream,
+                    "200 OK",
+                    "",
+                    r#"{"status":"1","data":{"ID":"p1","channelID":"c1","startTime":"1000000","endTime":"2000000","playURL":"http://127.0.0.1:1234/replay.m3u8"}}"#,
+                )
+                .await;
+            }
+        }
+    });
+    let client = fixture_client(&address.to_string());
+    let programme = Programme {
+        title: "Fixture".into(),
+        start_time_ms: 1_000_000,
+        end_time_ms: 2_000_000,
+        programme_id: "p1".into(),
+        channel_id: "c1".into(),
+    };
+    let url = client
+        .tvod_url(&programme, Lifecycle::new().cancellation_token())
+        .await
+        .expect("valid TVOD URL");
+    assert_eq!(url.as_str(), "http://127.0.0.1:1234/replay.m3u8");
+    server.await.expect("server");
+}
+
+#[tokio::test]
+async fn tvod_reauthenticates_once_for_auth_status_and_retries() {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind loopback");
+    let address = listener.local_addr().expect("read loopback address");
+    let server = tokio::spawn(async move {
+        for index in 0..10 {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let request = read_request(&mut stream).await;
+            if index < 4 || (5..9).contains(&index) {
+                let auth_index = if index < 4 { index } else { index - 5 };
+                write_auth_response(auth_index, &address.to_string(), &mut stream, &request).await;
+            } else if index == 4 {
+                assert!(request.contains(
+                    "POST /EPG/jsp/jkjiaoyutest/en/function/ajax/epg7getChannelByAjax.jsp"
+                ));
+                write_response(&mut stream, "401 Unauthorized", "", "").await;
+            } else {
+                assert!(request.contains(
+                    "POST /EPG/jsp/jkjiaoyutest/en/function/ajax/epg7getChannelByAjax.jsp"
+                ));
+                write_response(
+                    &mut stream,
+                    "200 OK",
+                    "",
+                    r#"{"status":"1","data":{"ID":"p1","channelID":"c1","startTime":"1000000","endTime":"2000000","playURL":"https://127.0.0.1:1234/replay.m3u8"}}"#,
+                )
+                .await;
+            }
+        }
+    });
+    let client = fixture_client(&address.to_string());
+    let programme = Programme {
+        title: "Fixture".into(),
+        start_time_ms: 1_000_000,
+        end_time_ms: 2_000_000,
+        programme_id: "p1".into(),
+        channel_id: "c1".into(),
+    };
+    let url = client
+        .tvod_url(&programme, Lifecycle::new().cancellation_token())
+        .await
+        .expect("reauthenticated TVOD URL");
+    assert_eq!(url.scheme(), "https");
+    server.await.expect("server");
+}
+
+#[tokio::test]
+async fn tvod_cancellation_does_not_wait_for_provider_body() {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind loopback");
+    let address = listener.local_addr().expect("read loopback address");
+    let server = tokio::spawn(async move {
+        for index in 0..5 {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let request = read_request(&mut stream).await;
+            if index < 4 {
+                write_auth_response(index, &address.to_string(), &mut stream, &request).await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        }
+    });
+    let client = fixture_client(&address.to_string());
+    let lifecycle = Lifecycle::new();
+    let cancellation = lifecycle.cancellation_token();
+    let task = tokio::spawn({
+        let client = client.clone();
+        let cancellation = cancellation.clone();
+        async move {
+            client
+                .tvod_url(
+                    &Programme {
+                        title: "Fixture".into(),
+                        start_time_ms: 1_000_000,
+                        end_time_ms: 2_000_000,
+                        programme_id: "p1".into(),
+                        channel_id: "c1".into(),
+                    },
+                    cancellation,
+                )
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+    lifecycle.begin_shutdown();
+    let error = tokio::time::timeout(Duration::from_secs(1), task)
+        .await
+        .expect("cancellation deadline")
+        .expect("request task")
+        .expect_err("cancelled TVOD");
+    assert_eq!(error.class_code(), EpgErrorClass::Cancelled);
+    server.abort();
+}
+
+#[tokio::test]
+async fn tvod_rejects_invalid_urls_and_oversized_responses() {
+    let invalid = tvod_result(
+        r#"{"status":"1","data":{"ID":"p1","channelID":"c1","startTime":"1000000","endTime":"2000000","playURL":"ftp://127.0.0.1/replay.m3u8"}}"#.to_owned(),
+    )
+    .await
+    .expect_err("invalid scheme");
+    assert_eq!(invalid.class_code(), EpgErrorClass::InvalidOrigin);
+
+    let oversized = tvod_result("x".repeat(1_048_577))
+        .await
+        .expect_err("body bound");
+    assert_eq!(oversized.class_code(), EpgErrorClass::Parse);
+}
+
+async fn tvod_result(body: String) -> Result<reqwest::Url, EpgError> {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind loopback");
+    let address = listener.local_addr().expect("read loopback address");
+    let server = tokio::spawn(async move {
+        for index in 0..5 {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let request = read_request(&mut stream).await;
+            if index < 4 {
+                write_auth_response(index, &address.to_string(), &mut stream, &request).await;
+            } else {
+                write_response(&mut stream, "200 OK", "", &body).await;
+            }
+        }
+    });
+    let client = fixture_client(&address.to_string());
+    let result = client
+        .tvod_url(
+            &Programme {
+                title: "Fixture".into(),
+                start_time_ms: 1_000_000,
+                end_time_ms: 2_000_000,
+                programme_id: "p1".into(),
+                channel_id: "c1".into(),
+            },
+            Lifecycle::new().cancellation_token(),
+        )
+        .await;
+    server.await.expect("server");
+    result
+}
+
+fn fixture_client(address: &str) -> EpgClient {
+    EpgClient::new(EpgConfig {
+        authentication_url: format!("http://{address}/EDS/jsp/AuthenticationURL"),
+        user_id: "fixture-user".into(),
+        password: "fixture-password".into(),
+        stb_id: "fixture-stb".into(),
+        stb_mac: "02:00:00:00:00:01".into(),
+        source_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        stb_type: "fixture-type".into(),
+        area_id: "fixture-area".into(),
+        user_group_id: "fixture-group".into(),
+        nonce: 7,
+        write_timeout: Duration::from_secs(1),
+        pool_timeout: Duration::from_secs(1),
+        media_pool_size: 1,
+    })
+    .expect("build client")
+}
+
+async fn write_auth_response(
+    index: usize,
+    address: &str,
+    stream: &mut tokio::net::TcpStream,
+    request: &str,
+) {
+    match index {
+        0 => {
+            assert!(request.starts_with("GET /EDS/jsp/AuthenticationURL?UserID=fixture-user"));
+            write_response(
+                stream,
+                "302 Found",
+                &format!("Location: http://{address}/EPG/jsp/authLoginHWCU.jsp\r\n"),
+                "",
+            )
+            .await;
+        }
+        1 => {
+            assert!(request.contains("GET /EPG/jsp/authLoginHWCU.jsp"));
+            write_response(
+                stream,
+                "200 OK",
+                "Set-Cookie: session=fixture; Path=/\r\n",
+                "EncryptToken=fixture-token",
+            )
+            .await;
+        }
+        2 => {
+            assert!(request.contains("POST /EPG/jsp/authLoginHWCU.jsp"));
+            write_response(stream, "200 OK", "", "EncryptToken=fixture-token").await;
+        }
+        _ => {
+            assert!(request.contains("POST /EPG/jsp/ValidAuthenticationHWCU.jsp"));
+            write_response(
+                stream,
+                "200 OK",
+                "",
+                "CUSetConfig('UserToken','fixture-user-token');CTCSetConfig('SessionID','fixture-session');",
+            )
+            .await;
+        }
     }
 }
 
