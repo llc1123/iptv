@@ -663,3 +663,24 @@ The self-test copies the gate into a temporary directory with a stub
 `rust/src/main.rs` and synthetic env files. It checks the `SKIP` and `REFUSE`
 classifications and that no value or temporary path leaks, and it never reads
 the real `var/iptv-e2e.env`.
+
+The plan-compatible aliases are `scripts/e2e-netns.sh` and
+`scripts/e2e-real.sh`. They delegate to the same gates; the real alias accepts
+`IPTV_RUN_REAL_E2E=1`, while `IPTV_RUN_REAL_E2E=0` is an explicit `SKIP`.
+
+## Migration dry run and systemd template
+
+The migration dry run performs static checks only:
+
+```bash
+bash scripts/migration-dry-run.sh --check
+bash scripts/migration-dry-run.sh --occupied-state
+```
+
+`--check` exits successfully without starting or stopping a process, changing
+an interface, changing a route, or writing state. `--occupied-state` returns
+`REFUSE` and exit 2 to model an existing migration lock; it never attempts a
+cutover. The checked-in `systemd/iptv-media-server.service` declares
+`CAP_NET_RAW` and `CAP_NET_ADMIN`, a 10-second stop grace, and a 65,536-file
+limit. It is a future deployment template only: do not install or start it
+until the Rust startup gate is no longer a scaffold.
