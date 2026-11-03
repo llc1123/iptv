@@ -15,6 +15,7 @@ use crate::hls::{RequestHeaders, TokenStore};
 use crate::lifecycle::{CancellationToken, Lifecycle, RequestGuard};
 use crate::logo_catalog::LogoCatalog;
 use crate::snapshot::SnapshotStore;
+use crate::{epg::EpgClient, epg::Programme};
 
 pub mod handlers;
 pub mod proxy;
@@ -44,6 +45,50 @@ pub type PlaybackFuture<'a> = Pin<Box<dyn Future<Output = Result<Url, PlaybackEr
 pub trait PlaybackResolver: Send + Sync {
     /// Resolves one live channel without exposing provider details.
     fn resolve_live<'a>(&'a self, channel_id: &'a str) -> PlaybackFuture<'a>;
+
+    /// Resolves one snapshot programme through authenticated TVOD.
+    ///
+    /// The default keeps existing live-only adapters source-compatible.
+    fn resolve_replay<'a>(
+        &'a self,
+        _programme: &'a Programme,
+        _cancellation: CancellationToken,
+    ) -> PlaybackFuture<'a> {
+        Box::pin(async { Err(PlaybackError::Unavailable) })
+    }
+}
+
+/// Playback resolver backed by the authenticated EPG TVOD operation.
+#[derive(Clone, Debug)]
+pub struct EpgPlaybackResolver {
+    client: EpgClient,
+}
+
+impl EpgPlaybackResolver {
+    /// Creates a resolver for authenticated TVOD playback.
+    #[must_use]
+    pub const fn new(client: EpgClient) -> Self {
+        Self { client }
+    }
+}
+
+impl PlaybackResolver for EpgPlaybackResolver {
+    fn resolve_live<'a>(&'a self, _channel_id: &'a str) -> PlaybackFuture<'a> {
+        Box::pin(async { Err(PlaybackError::Unavailable) })
+    }
+
+    fn resolve_replay<'a>(
+        &'a self,
+        programme: &'a Programme,
+        cancellation: CancellationToken,
+    ) -> PlaybackFuture<'a> {
+        Box::pin(async move {
+            self.client
+                .tvod_url(programme, cancellation)
+                .await
+                .map_err(|_| PlaybackError::Unavailable)
+        })
+    }
 }
 
 /// A direct upstream URL or a full opaque token captured from a playlist.
