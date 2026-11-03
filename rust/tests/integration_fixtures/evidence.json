@@ -1,0 +1,19 @@
+{
+  "kind": "media-server-integration",
+  "status": "deterministic",
+  "network": "offline-default",
+  "events": [
+    {"route_key": "authentication", "body": "digest-only"},
+    {"route_key": "channels", "body": "digest-only"},
+    {"route_key": "programmes", "body": "digest-only"},
+    {"route_key": "tvod", "body": "digest-only"}
+  ],
+  "assertions": [
+    "ordered-form-keys",
+    "forced-reauthentication",
+    "bounded-request-response",
+    "provider-shutdown-join",
+    "forbidden-reporting-absent",
+    "route-admission-after-shutdown"
+  ]
+}
