@@ -1,7 +1,7 @@
 {
   "kind": "media-server-integration",
   "parent_commit": "a2a8489",
-  "head_commit": "a2a8489",
+  "head_commit": "8d70a33",
   "status": "deterministic",
   "network": "offline-default",
   "events": [
