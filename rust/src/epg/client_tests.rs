@@ -304,6 +304,22 @@ async fn tvod_posts_ordered_form_and_returns_validated_url() {
 }
 
 #[tokio::test]
+async fn hls_get_uses_python_shape_and_validates_response_url() {
+    let result = hls_result(r#"{"status":"1","hlsUrl":"http://127.0.0.1:1234/live.m3u8"}"#)
+        .await
+        .expect("valid HLS URL");
+    assert_eq!(result.as_str(), "http://127.0.0.1:1234/live.m3u8");
+}
+
+#[tokio::test]
+async fn hls_rejects_invalid_response_url() {
+    let error = hls_result(r#"{"hlsUrl":"ftp://127.0.0.1/live.m3u8"}"#)
+        .await
+        .expect_err("invalid HLS URL");
+    assert_eq!(error.class_code(), EpgErrorClass::InvalidOrigin);
+}
+
+#[tokio::test]
 async fn tvod_reauthenticates_once_for_auth_status_and_retries() {
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -443,6 +459,36 @@ async fn tvod_result(body: String) -> Result<reqwest::Url, EpgError> {
             },
             Lifecycle::new().cancellation_token(),
         )
+        .await;
+    server.await.expect("server");
+    result
+}
+
+async fn hls_result(body: &str) -> Result<reqwest::Url, EpgError> {
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind loopback");
+    let address = listener.local_addr().expect("read loopback address");
+    let body = body.to_owned();
+    let server = tokio::spawn(async move {
+        for index in 0..5 {
+            let (mut stream, _) = listener.accept().await.expect("accept request");
+            let request = read_request(&mut stream).await;
+            if index < 4 {
+                write_auth_response(index, &address.to_string(), &mut stream, &request).await;
+            } else {
+                assert!(request.contains(
+                    "GET /EPG/jsp/jkjiaoyutest/en/function/ajax/epg7getChannelByAjax.jsp?action=getChannelHlsUrl&channelId=c1 HTTP/1.1"
+                ));
+                let headers = request.to_ascii_lowercase();
+                assert!(headers.contains("vis-ajax: ajaxhttprequest"));
+                assert!(headers.contains("accept: */*"));
+                write_response(&mut stream, "200 OK", "", &body).await;
+            }
+        }
+    });
+    let result = fixture_client(&address.to_string())
+        .hls_url("c1", Lifecycle::new().cancellation_token())
         .await;
     server.await.expect("server");
     result

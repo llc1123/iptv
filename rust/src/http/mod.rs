@@ -12,7 +12,7 @@ use reqwest::Url;
 
 use crate::health::HealthState;
 use crate::hls::{RequestHeaders, TokenStore};
-use crate::lifecycle::{CancellationToken, Lifecycle, RequestGuard};
+use crate::lifecycle::{CancellationSource, CancellationToken, Lifecycle, RequestGuard};
 use crate::logo_catalog::LogoCatalog;
 use crate::snapshot::SnapshotStore;
 use crate::{epg::EpgClient, epg::Programme};
@@ -62,19 +62,57 @@ pub trait PlaybackResolver: Send + Sync {
 #[derive(Clone, Debug)]
 pub struct EpgPlaybackResolver {
     client: EpgClient,
+    snapshots: SnapshotStore,
+    cancellation: CancellationToken,
 }
 
 impl EpgPlaybackResolver {
     /// Creates a resolver for authenticated TVOD playback.
     #[must_use]
-    pub const fn new(client: EpgClient) -> Self {
-        Self { client }
+    pub fn new(client: EpgClient) -> Self {
+        Self::with_runtime(
+            client,
+            SnapshotStore::new(),
+            CancellationSource::new().token(),
+        )
+    }
+
+    /// Creates a resolver bound to the live snapshot and process cancellation.
+    #[must_use]
+    pub fn with_runtime(
+        client: EpgClient,
+        snapshots: SnapshotStore,
+        cancellation: CancellationToken,
+    ) -> Self {
+        Self {
+            client,
+            snapshots,
+            cancellation,
+        }
     }
 }
 
 impl PlaybackResolver for EpgPlaybackResolver {
-    fn resolve_live<'a>(&'a self, _channel_id: &'a str) -> PlaybackFuture<'a> {
-        Box::pin(async { Err(PlaybackError::Unavailable) })
+    fn resolve_live<'a>(&'a self, channel_id: &'a str) -> PlaybackFuture<'a> {
+        Box::pin(async move {
+            let allowed = self
+                .snapshots
+                .load()
+                .ok()
+                .flatten()
+                .is_some_and(|snapshot| {
+                    snapshot.channels().iter().any(|channel| {
+                        channel.channel_id == channel_id && channel.time_shift == "1"
+                    })
+                });
+            if !allowed {
+                return Err(PlaybackError::Unavailable);
+            }
+            self.client
+                .hls_url(channel_id, self.cancellation.clone())
+                .await
+                .map_err(|_| PlaybackError::Unavailable)
+        })
     }
 
     fn resolve_replay<'a>(

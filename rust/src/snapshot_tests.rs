@@ -90,6 +90,39 @@ fn store_rejects_non_newer_generations_and_keeps_old_snapshot() {
     );
 }
 
+#[tokio::test]
+async fn readiness_wait_is_event_driven_and_cancellable() {
+    let store = SnapshotStore::new();
+    let lifecycle = crate::lifecycle::Lifecycle::new();
+    let waiter_store = store.clone();
+    let waiter_token = lifecycle.cancellation_token();
+    let waiter = tokio::spawn(async move { waiter_store.wait_for_snapshot(&waiter_token).await });
+    tokio::task::yield_now().await;
+    lifecycle.begin_shutdown();
+    assert!(!waiter.await.expect("readiness waiter"));
+}
+
+#[tokio::test]
+async fn warm_readiness_returns_after_one_snapshot_publication() {
+    let store = SnapshotStore::new();
+    let lifecycle = crate::lifecycle::Lifecycle::new();
+    let snapshot = Snapshot::new(
+        1,
+        vec![channel("warm")],
+        Vec::new(),
+        LogoView::from_channels(&[channel("warm")]),
+        GuideZone::Fixed { offset_minutes: 0 },
+        0,
+    )
+    .expect("warm snapshot");
+    store.publish(snapshot).expect("publish warm snapshot");
+    assert!(
+        store
+            .wait_for_snapshot(&lifecycle.cancellation_token())
+            .await
+    );
+}
+
 #[test]
 fn snapshot_preserves_xmltv_sort_only_by_channel_and_start() {
     let snapshot = Snapshot::new(

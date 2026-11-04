@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use reqwest::cookie::Jar;
 use reqwest::redirect::Policy;
 use reqwest::{Client, Response, Url};
+use serde_json::from_str;
 use tokio::sync::Semaphore;
 
 use crate::crypto::epg_auth::{AuthenticatorInput, identity_encode, make_authenticator};
@@ -520,6 +521,33 @@ impl EpgClient {
         })
     }
 
+    /// Resolves one live channel through the Python-compatible HLS operation.
+    ///
+    /// # Errors
+    /// Returns a redacted request, provider, cancellation, parse, or invalid playback URL error.
+    pub async fn hls_url(
+        &self,
+        channel_id: &str,
+        shutdown: CancellationToken,
+    ) -> Result<Url, EpgError> {
+        let mut session = self.authenticate_with_shutdown(shutdown.clone()).await?;
+        for attempt in 0..2_u8 {
+            match self.fetch_hls(&session, channel_id, shutdown.clone()).await {
+                Ok(address) => return validate_play_url(&address.hls_url),
+                Err(error) if attempt == 0 && matches!(error.status_code(), Some(401 | 403)) => {
+                    session = self
+                        .force_reauthenticate_with_shutdown(session.generation(), shutdown.clone())
+                        .await?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(EpgError::class(
+            EpgErrorStage::Request,
+            EpgErrorClass::Transport,
+        ))
+    }
+
     /// Resolves one programme through the authenticated TVOD operation.
     ///
     /// # Errors
@@ -605,6 +633,45 @@ impl EpgClient {
                 EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse)
             }
         })
+    }
+
+    async fn fetch_hls(
+        &self,
+        session: &SessionBundle,
+        channel_id: &str,
+        shutdown: CancellationToken,
+    ) -> Result<super::models::HlsAddress, EpgError> {
+        let path = session
+            .origin()
+            .join(CHANNEL_AJAX_PATH)
+            .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::InvalidOrigin))?;
+        let mut path = path;
+        path.query_pairs_mut()
+            .append_pair("action", "getChannelHlsUrl")
+            .append_pair("channelId", channel_id);
+        let response = tokio::select! {
+            () = shutdown.cancelled() => return Err(EpgError::cancelled(EpgErrorStage::Request)),
+            response = send_with_client_retry(
+                session.control_client(),
+                |client| {
+                    client
+                        .get(path.clone())
+                        .header("VIS-AJAX", "AjaxHttpRequest")
+                        .header("Accept", "*/*")
+                },
+                &super::session::TokioSleeper,
+                EpgErrorStage::Request,
+                Arc::clone(&self.control_permits),
+                self.config.pool_timeout,
+                self.config.write_timeout,
+            ) => response?,
+        };
+        ensure_status(&response, EpgErrorStage::Request, 1)?;
+        let body = tokio::select! {
+            () = shutdown.cancelled() => return Err(EpgError::cancelled(EpgErrorStage::Request)),
+            body = bounded_response_text(response) => body?,
+        };
+        from_str(&body).map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::Parse))
     }
 
     async fn fetch_channel_category_response(

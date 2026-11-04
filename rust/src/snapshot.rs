@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use thiserror::Error;
+use tokio::sync::Notify;
 
 use crate::epg::models::{BootChannel, Programme};
 use crate::guide::{GuideZone, IndexError, ProgrammeIndex};
@@ -280,9 +281,19 @@ impl Snapshot {
 }
 
 /// Atomically holds the current immutable snapshot.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SnapshotStore {
     current: Arc<RwLock<Option<Arc<Snapshot>>>>,
+    changed: Arc<Notify>,
+}
+
+impl Default for SnapshotStore {
+    fn default() -> Self {
+        Self {
+            current: Arc::new(RwLock::new(None)),
+            changed: Arc::new(Notify::new()),
+        }
+    }
 }
 
 impl SnapshotStore {
@@ -320,7 +331,22 @@ impl SnapshotStore {
             return Err(SnapshotError::GenerationNotNewer);
         }
         *current = Some(snapshot);
+        self.changed.notify_waiters();
         Ok(())
+    }
+
+    /// Waits for the first published snapshot without polling.
+    pub async fn wait_for_snapshot(&self, cancellation: &CancellationToken) -> bool {
+        loop {
+            let notified = self.changed.notified();
+            if self.load().ok().flatten().is_some() {
+                return true;
+            }
+            tokio::select! {
+                () = notified => {},
+                () = cancellation.cancelled() => return false,
+            }
+        }
     }
 }
 

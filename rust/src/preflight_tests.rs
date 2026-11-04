@@ -70,6 +70,25 @@ fn exact_candidate_is_conflict() {
 }
 
 #[test]
+fn production_preflight_refuses_python_without_exact_identity() {
+    let root = fixture_root("production");
+    let process = root.join("12");
+    assert!(fs::create_dir_all(&process).is_ok());
+    assert!(
+        fs::write(
+            process.join("cmdline"),
+            b"python\0-m\0iptv_client.service\0"
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        PythonPreflight::without_expected_identity(root.clone()).inspect(),
+        Err(StartupRefusal::ProcFieldInaccessible)
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn mismatch_wrapper_inaccessible_invalid_utf8_multiple_and_empty_are_distinct() {
     let root = fixture_root("table");
     let interpreter = root.join("python");

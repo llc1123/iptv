@@ -172,6 +172,14 @@ impl<'a, P: Platform> DhcpClient<'a, P, SystemClock> {
     }
 }
 
+impl<P: Platform, C> DhcpClient<'_, P, C> {
+    /// Transfers ownership of the platform after the transaction completes.
+    #[must_use]
+    pub fn into_platform(self) -> P {
+        self.platform
+    }
+}
+
 impl<'a, P: Platform, C: Clock> DhcpClient<'a, P, C> {
     /// Creates a client with an injected clock.
     #[must_use]

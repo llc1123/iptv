@@ -17,6 +17,8 @@ mod python_scan;
 pub mod refresh;
 pub mod render;
 pub mod snapshot;
+/// Production startup composition and process-owned shutdown orchestration.
+pub mod startup;
 /// Startup admission composition for the Python preflight and lifecycle guards.
 pub mod startup_gate;
 
@@ -26,4 +28,12 @@ pub mod startup_gate;
 /// Returns [`error::AppError`] when argument parsing or configuration validation fails.
 pub fn load_config() -> Result<config::Config, error::AppError> {
     config::Config::from_environment()
+}
+
+/// Runs the production server after configuration has been parsed.
+///
+/// # Errors
+/// Returns a fixed operational error when startup or serving is refused.
+pub async fn run(config: config::Config) -> Result<(), error::AppError> {
+    startup::run(config).await
 }

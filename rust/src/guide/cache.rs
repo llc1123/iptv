@@ -60,6 +60,17 @@ pub enum CacheState {
     Invalid(CacheInvalidReason),
 }
 
+impl CacheState {
+    /// Returns cached programmes only when the complete cache is fresh.
+    #[must_use]
+    pub fn into_fresh_programmes(self) -> Option<Vec<Programme>> {
+        match self {
+            Self::Fresh { programmes, .. } => Some(programmes),
+            Self::Missing | Self::Stale { .. } | Self::Invalid(_) => None,
+        }
+    }
+}
+
 /// Reasons a cache cannot be served.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CacheInvalidReason {

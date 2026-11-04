@@ -117,6 +117,18 @@ impl EpgMetadataSource {
             session: Mutex::new(None),
         }
     }
+
+    /// Authenticates and fetches the initial channel bootstrap.
+    ///
+    /// # Errors
+    /// Returns the fixed metadata error produced by authentication or channel parsing.
+    pub async fn bootstrap(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<Vec<BootChannel>, MetadataError> {
+        let session = self.authenticate(cancellation.clone()).await?;
+        self.channels(session, cancellation).await
+    }
 }
 
 impl MetadataSource for EpgMetadataSource {
@@ -308,6 +320,18 @@ impl RefreshEngine {
             failure_count: 0,
             prior: None,
         }
+    }
+
+    /// Seeds a validated warm snapshot before the first scheduled cycle.
+    ///
+    /// # Errors
+    /// Returns the snapshot publication error when the generation is not newer.
+    pub fn seed_snapshot(&mut self, snapshot: Arc<Snapshot>) -> Result<(), MetadataError> {
+        self.store
+            .publish(Arc::clone(&snapshot))
+            .map_err(|_| MetadataError::Business)?;
+        self.prior = Some(snapshot);
+        Ok(())
     }
 
     /// Publishes a validated warm snapshot before the first scheduled cycle.
@@ -621,6 +645,15 @@ impl RefreshSupervisor {
     #[must_use]
     pub fn start(engine: RefreshEngine) -> Self {
         let cancellation = CancellationSource::new();
+        Self::start_with_cancellation(engine, cancellation)
+    }
+
+    /// Starts a refresh task owned by the process cancellation source.
+    #[must_use]
+    pub fn start_with_cancellation(
+        engine: RefreshEngine,
+        cancellation: CancellationSource,
+    ) -> Self {
         let token = cancellation.token();
         let handle = tokio::spawn(async move { engine.with_cancellation(token).run().await });
         Self {

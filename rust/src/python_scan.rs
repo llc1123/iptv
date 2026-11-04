@@ -25,24 +25,43 @@ impl PythonPreflight {
             }
         }
         processes.sort_by_key(|(pid, _)| *pid);
+        let Some(expected) = self.expected.as_ref() else {
+            for (_, process) in processes {
+                let argv = read_cmdline(&process)?;
+                if is_unidentified_python_candidate(&argv) {
+                    return Err(StartupRefusal::ProcFieldInaccessible);
+                }
+            }
+            return Ok(());
+        };
         let mut candidates = Vec::new();
         for (_, process) in processes {
             let argv = read_cmdline(&process)?;
-            if !is_candidate(&argv, &self.expected.entrypoint) {
+            if !is_candidate(&argv, &expected.entrypoint) {
                 continue;
             }
-            if is_wrapper(&argv, &self.expected.entrypoint) {
+            if is_wrapper(&argv, &expected.entrypoint) {
                 return Err(StartupRefusal::WrapperMismatch);
             }
-            candidates.push(read_candidate(&process, argv, &self.expected.entrypoint)?);
+            candidates.push(read_candidate(&process, argv, &expected.entrypoint)?);
         }
         match candidates.as_slice() {
             [] => Ok(()),
-            [_] if candidates[0] == self.expected => Err(StartupRefusal::PythonConflict),
+            [_] if candidates[0] == *expected => Err(StartupRefusal::PythonConflict),
             [_] => Err(StartupRefusal::PythonIdentityMismatch),
             _ => Err(StartupRefusal::MultiplePythonCandidates),
         }
     }
+}
+
+fn is_unidentified_python_candidate(argv: &[String]) -> bool {
+    argv.iter().any(|argument| {
+        let name = std::path::Path::new(argument)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        name.starts_with("python") || argument.ends_with("service_cli.py")
+    })
 }
 
 fn read_cmdline(process: &Path) -> Result<Vec<String>, StartupRefusal> {

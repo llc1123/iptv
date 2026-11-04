@@ -115,14 +115,26 @@ impl Lifecycle {
     /// Creates an accepting lifecycle.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_cancellation(CancellationSource::new())
+    }
+
+    /// Creates an accepting lifecycle from the process cancellation source.
+    #[must_use]
+    pub fn with_cancellation(cancellation: CancellationSource) -> Self {
         Self {
             inner: Arc::new(LifecycleInner {
                 active: AtomicUsize::new(0),
                 draining: AtomicBool::new(false),
                 changed: Notify::new(),
-                cancellation: CancellationSource::new(),
+                cancellation,
             }),
         }
+    }
+
+    /// Returns the source shared with process-owned supervisors.
+    #[must_use]
+    pub fn cancellation_source(&self) -> CancellationSource {
+        self.inner.cancellation.clone()
     }
 
     /// Returns a token cancelled when shutdown begins.

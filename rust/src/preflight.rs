@@ -137,7 +137,7 @@ impl PythonProcessSpec {
 #[derive(Clone, PartialEq, Eq)]
 pub struct PythonPreflight {
     pub(crate) proc_root: PathBuf,
-    pub(crate) expected: PythonProcessSpec,
+    pub(crate) expected: Option<PythonProcessSpec>,
 }
 
 impl fmt::Debug for PythonPreflight {
@@ -152,7 +152,16 @@ impl PythonPreflight {
     pub fn new(proc_root: PathBuf, expected: PythonProcessSpec) -> Self {
         Self {
             proc_root,
-            expected,
+            expected: Some(expected),
+        }
+    }
+
+    /// Creates a production preflight without inventing a Python identity.
+    #[must_use]
+    pub fn without_expected_identity(proc_root: PathBuf) -> Self {
+        Self {
+            proc_root,
+            expected: None,
         }
     }
 }
