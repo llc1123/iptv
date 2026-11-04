@@ -419,7 +419,8 @@ fn decode_udp(frame: &[u8]) -> Result<(Ipv4Addr, &[u8]), PacketError> {
             .get(ip_end..udp_end)
             .ok_or(PacketError::MalformedFrame)?,
     );
-    if checksum(&pseudo) != 0 {
+    let udp_checksum = read_u16(frame, ip_end + 6)?;
+    if udp_checksum != 0 && checksum(&pseudo) != 0 {
         return Err(PacketError::MalformedFrame);
     }
     Ok((
@@ -645,6 +646,10 @@ mod tests {
             decoded.as_ref().map(|reply| reply.server),
             Ok(Some(Ipv4Addr::new(192, 0, 2, 1)))
         );
+        let mut zero_udp_checksum = valid.clone();
+        zero_udp_checksum[ip_end_for_test() + 6] = 0;
+        zero_udp_checksum[ip_end_for_test() + 7] = 0;
+        assert!(decode_reply(&zero_udp_checksum, 7, MAC, ReplyKind::Ack).is_ok());
         assert_eq!(
             decode_reply(&valid, 8, MAC, ReplyKind::Ack),
             Err(PacketError::WrongTransaction)
@@ -690,6 +695,10 @@ mod tests {
             decode_reply(&wrong_version, 7, MAC, ReplyKind::Ack),
             Err(PacketError::MalformedFrame)
         );
+    }
+
+    const fn ip_end_for_test() -> usize {
+        ETHERNET_HEADER_LEN + IPV4_HEADER_LEN
     }
 
     #[test]
