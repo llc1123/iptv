@@ -418,7 +418,7 @@ fn startup_error() -> AppError {
     AppError::Startup(StartupError::Startup)
 }
 
-fn report_startup_stage(stage: &'static str) {
+pub(crate) fn report_startup_stage(stage: &'static str) {
     eprintln!("startup_stage={stage}");
 }
 

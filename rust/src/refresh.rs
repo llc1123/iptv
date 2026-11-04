@@ -459,6 +459,24 @@ impl RefreshEngine {
             .filter_map(|outcome| outcome.programmes.as_ref())
             .count();
         if valid == 0 {
+            if let Some(error) = outcomes.iter().find_map(|outcome| outcome.error.as_ref()) {
+                crate::startup::report_startup_stage(match error {
+                    MetadataError::Authentication(_, class) => match class {
+                        EpgErrorClass::Parse => "refresh-window-parse",
+                        EpgErrorClass::HttpStatus => "refresh-window-status",
+                        EpgErrorClass::Transport
+                        | EpgErrorClass::Timeout
+                        | EpgErrorClass::PoolTimeout => "refresh-window-request",
+                        EpgErrorClass::Cancelled => "refresh-window-cancelled",
+                        EpgErrorClass::InvalidOrigin
+                        | EpgErrorClass::MissingField
+                        | EpgErrorClass::Crypto => "refresh-window-auth",
+                    },
+                    MetadataError::SessionExpired => "refresh-window-auth",
+                    MetadataError::Business => "refresh-window-other",
+                    MetadataError::Cancelled => "refresh-window-cancelled",
+                });
+            }
             self.record_cycle_failure().await;
             return Err(MetadataError::Business);
         }
