@@ -491,15 +491,18 @@ impl RefreshEngine {
             .prior
             .as_ref()
             .map_or(1, |snapshot| snapshot.generation().saturating_add(1));
-        let snapshot = Snapshot::new(
+        let Ok(snapshot) = Snapshot::new(
             generation,
             channels,
             programmes,
             logos,
             self.guide_zone.clone(),
             self.catchup_days,
-        )
-        .map_err(|_| MetadataError::Business)?;
+        ) else {
+            crate::startup::report_startup_stage("refresh-snapshot");
+            self.record_cycle_failure().await;
+            return Err(MetadataError::Business);
+        };
         let persistence_failed =
             if let (Some(cache), Some(fingerprint)) = (&self.cache, &self.cache_fingerprint) {
                 match cache.save(
@@ -510,7 +513,10 @@ impl RefreshEngine {
                 ) {
                     Ok(()) => false,
                     Err(CacheError::Cancelled) => return Err(MetadataError::Cancelled),
-                    Err(_) => true,
+                    Err(_) => {
+                        crate::startup::report_startup_stage("refresh-cache");
+                        true
+                    }
                 }
             } else {
                 false
@@ -518,9 +524,11 @@ impl RefreshEngine {
         if self.cancellation.is_cancelled() {
             return Err(MetadataError::Cancelled);
         }
-        self.store
-            .publish(Arc::clone(&snapshot))
-            .map_err(|_| MetadataError::Business)?;
+        if self.store.publish(Arc::clone(&snapshot)).is_err() {
+            crate::startup::report_startup_stage("refresh-publish");
+            self.record_cycle_failure().await;
+            return Err(MetadataError::Business);
+        }
         self.prior = Some(Arc::clone(&snapshot));
         self.failure_count = 0;
         let now = u64::try_from(self.clock.utc().timestamp()).unwrap_or(0);
