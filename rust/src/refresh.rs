@@ -18,7 +18,7 @@ use crate::guide::cache::CacheError;
 use crate::guide::{CacheFingerprint, GuideCache, GuideWindow};
 use crate::health::{HealthState, SnapshotCounts};
 use crate::lifecycle::{CancellationSource, CancellationToken};
-use crate::snapshot::{LogoView, Snapshot, SnapshotStore};
+use crate::snapshot::{LogoView, Snapshot, SnapshotError, SnapshotStore};
 
 const MAX_RETAINED_WINDOW_ERRORS: usize = 32;
 const MAX_WINDOW_CONCURRENCY: usize = 8;
@@ -491,17 +491,30 @@ impl RefreshEngine {
             .prior
             .as_ref()
             .map_or(1, |snapshot| snapshot.generation().saturating_add(1));
-        let Ok(snapshot) = Snapshot::new(
+        let snapshot_result = Snapshot::new(
             generation,
             channels,
             programmes,
             logos,
             self.guide_zone.clone(),
             self.catchup_days,
-        ) else {
-            crate::startup::report_startup_stage("refresh-snapshot");
-            self.record_cycle_failure().await;
-            return Err(MetadataError::Business);
+        );
+        let snapshot = match snapshot_result {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                crate::startup::report_startup_stage(match error {
+                    SnapshotError::ProgrammeLimit => "refresh-programme-limit",
+                    SnapshotError::ProgrammeConflict => "refresh-programme-conflict",
+                    SnapshotError::ProgrammeInterval => "refresh-programme-interval",
+                    SnapshotError::TooManyChannels
+                    | SnapshotError::InvalidChannelIdentifiers
+                    | SnapshotError::LogoAlignment
+                    | SnapshotError::GenerationNotNewer
+                    | SnapshotError::StoreUnavailable => "refresh-snapshot",
+                });
+                self.record_cycle_failure().await;
+                return Err(MetadataError::Business);
+            }
         };
         let persistence_failed =
             if let (Some(cache), Some(fingerprint)) = (&self.cache, &self.cache_fingerprint) {

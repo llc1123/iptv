@@ -63,9 +63,15 @@ pub enum SnapshotError {
     /// The logo view did not align with the channel collection.
     #[error("snapshot logo alignment invalid")]
     LogoAlignment,
-    /// The programme index rejected the immutable guide data.
+    /// The programme input exceeded the immutable guide bound.
     #[error("snapshot programme index invalid")]
-    ProgrammeIndex,
+    ProgrammeLimit,
+    /// The programme index contained conflicting data for one identity.
+    #[error("snapshot programme identity conflict")]
+    ProgrammeConflict,
+    /// The programme index contained an invalid interval.
+    #[error("snapshot programme interval invalid")]
+    ProgrammeInterval,
     /// A publication attempted to move backwards or repeat a generation.
     #[error("snapshot generation is not newer")]
     GenerationNotNewer,
@@ -75,8 +81,12 @@ pub enum SnapshotError {
 }
 
 impl From<IndexError> for SnapshotError {
-    fn from(_: IndexError) -> Self {
-        Self::ProgrammeIndex
+    fn from(error: IndexError) -> Self {
+        match error {
+            IndexError::TooManyProgrammes => Self::ProgrammeLimit,
+            IndexError::ConflictingIdentity => Self::ProgrammeConflict,
+            IndexError::InvalidInterval => Self::ProgrammeInterval,
+        }
     }
 }
 
