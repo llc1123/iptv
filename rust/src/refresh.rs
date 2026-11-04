@@ -810,6 +810,7 @@ fn merge_windows(previous: &[Programme], outcomes: &[WindowOutcome]) -> Vec<Prog
             programme.programme_id.clone(),
         )
     });
+    merged.retain(|programme| programme.start_time_ms < programme.end_time_ms);
     merged
 }
 

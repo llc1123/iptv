@@ -210,6 +210,31 @@ fn successful_window_replaces_overlap_and_failed_window_carries_only_overlap() {
 }
 
 #[test]
+fn merge_windows_discards_provider_intervals_without_positive_duration() {
+    let outcomes = vec![WindowOutcome {
+        channel_id: "c1".to_owned(),
+        window: GuideWindow {
+            start_ms: 0,
+            end_ms: 15,
+        },
+        programmes: Some(vec![
+            programme("c1", 1, 5, "valid"),
+            programme("c1", 5, 5, "empty"),
+            programme("c1", 8, 7, "reversed"),
+        ]),
+        error: None,
+    }];
+    let merged = merge_windows(&[], &outcomes);
+    assert_eq!(
+        merged
+            .iter()
+            .map(|item| item.programme_id.as_str())
+            .collect::<Vec<_>>(),
+        ["valid"]
+    );
+}
+
+#[test]
 fn programme_window_uses_half_open_overlap() {
     let item = programme("c1", 10, 20, "p");
     assert!(overlaps_window(
