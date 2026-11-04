@@ -28,7 +28,9 @@ use crate::http::{
 use crate::lifecycle::{CancellationSource, CancellationToken, Lifecycle};
 use crate::logo_catalog::LogoCatalog;
 use crate::preflight::{PythonPreflight, StartupRefusal, acquire_startup_gate};
-use crate::refresh::{EpgMetadataSource, RefreshEngine, RefreshEngineConfig, RefreshSupervisor};
+use crate::refresh::{
+    EpgMetadataSource, MetadataSource, RefreshEngine, RefreshEngineConfig, RefreshSupervisor,
+};
 use crate::snapshot::{Snapshot, SnapshotStore};
 
 const REFRESH_STOP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -201,7 +203,11 @@ async fn prepare_engine(
         startup_error()
     })?;
     let source = Arc::new(EpgMetadataSource::new(client.clone()));
-    let channels = source.bootstrap(token.clone()).await.map_err(|_| {
+    let session = source.authenticate(token.clone()).await.map_err(|_| {
+        report_startup_stage("epg-auth");
+        startup_error()
+    })?;
+    let channels = source.channels(session, token.clone()).await.map_err(|_| {
         report_startup_stage("epg-bootstrap");
         startup_error()
     })?;
