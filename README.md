@@ -327,9 +327,9 @@ Baseline and failure response:
 4. The verification gates never get this far. `scripts/verify.sh` and
    `scripts/test-mock.sh` run in-process with loopback-only mock listeners,
    the mock benchmark opens no sockets, the netns gate runs in a throwaway
-   namespace, and the real E2E gate currently refuses before it launches
-   anything. None of them needs capabilities or changes host addresses or
-   routes.
+   namespace, and the real E2E gate is excluded unless explicitly enabled.
+   None of them needs capabilities or changes host addresses or routes unless
+   the operator explicitly runs the real gate.
 
 ### Configuration mapping
 
@@ -617,8 +617,8 @@ as evidence about the host that produced it, not as an SLA.
 ## Opt-in real E2E gate
 
 The real E2E gate is deliberately excluded from `scripts/verify.sh` and
-`scripts/test-mock.sh`. It is an explicit, non-default gate for a future
-working Rust server only:
+`scripts/test-mock.sh`. It is an explicit, non-default gate for the Rust
+startup path:
 
 ```bash
 IPTV_ENABLE_REAL_E2E=1 bash scripts/test-real-e2e.sh
