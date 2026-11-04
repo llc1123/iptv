@@ -94,7 +94,7 @@ report_failure_stage() {
     [[ -f "$RUN_DIR/server.err" ]] || return 0
     while IFS= read -r line; do
         case "$line" in
-            startup_stage=preflight|startup_stage=guide-window|startup_stage=dhcp|startup_stage=dhcp-platform|startup_stage=dhcp-preflight|startup_stage=dhcp-interface|startup_stage=dhcp-option60|startup_stage=dhcp-packet|startup_stage=dhcp-lease|startup_stage=dhcp-timeout|startup_stage=dhcp-socket|startup_stage=dhcp-interface-setup|startup_stage=epg-client|startup_stage=epg-bootstrap|startup_stage=cache|startup_stage=warm-cache|startup_stage=hls-policy|startup_stage=first-snapshot|startup_stage=serve)
+            startup_stage=preflight|startup_stage=guide-window|startup_stage=dhcp|startup_stage=dhcp-platform|startup_stage=dhcp-preflight|startup_stage=dhcp-interface|startup_stage=dhcp-option60|startup_stage=dhcp-frame|startup_stage=dhcp-mac|startup_stage=dhcp-cookie|startup_stage=dhcp-options|startup_stage=dhcp-message|startup_stage=dhcp-ports|startup_stage=dhcp-transaction|startup_stage=dhcp-bootp|startup_stage=dhcp-message-type|startup_stage=dhcp-nak|startup_stage=dhcp-missing-option|startup_stage=dhcp-size|startup_stage=dhcp-lease|startup_stage=dhcp-timeout|startup_stage=dhcp-socket|startup_stage=dhcp-interface-setup|startup_stage=epg-client|startup_stage=epg-bootstrap|startup_stage=cache|startup_stage=warm-cache|startup_stage=hls-policy|startup_stage=first-snapshot|startup_stage=serve)
                 printf 'STARTUP_STAGE: %s\n' "${line#startup_stage=}" >&2
                 ;;
         esac

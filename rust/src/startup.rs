@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::dhcp::linux::{
     ClientConfig, DhcpClient, LinuxError, LinuxPlatform, Platform, configure_interface,
 };
-use crate::dhcp::packet::MacAddress;
+use crate::dhcp::packet::{MacAddress, PacketError};
 use crate::dhcp::{DhcpError, LifecycleResult};
 use crate::epg::{EpgClient, EpgConfig};
 use crate::error::{AppError, StartupError};
@@ -419,11 +419,32 @@ fn report_startup_stage(stage: &'static str) {
 fn report_dhcp_stage(error: &DhcpError) {
     let stage = match error {
         DhcpError::Crypto(_) => "dhcp-option60",
-        DhcpError::Packet(_) => "dhcp-packet",
+        DhcpError::Packet(error) => {
+            report_packet_stage(error);
+            return;
+        }
         DhcpError::Lease(_) => "dhcp-lease",
         DhcpError::StageTimeout | DhcpError::Platform(LinuxError::Timeout) => "dhcp-timeout",
         DhcpError::Platform(LinuxError::Io) => "dhcp-socket",
         DhcpError::Platform(_) => "dhcp-platform",
+    };
+    report_startup_stage(stage);
+}
+
+fn report_packet_stage(error: &PacketError) {
+    let stage = match error {
+        PacketError::MalformedFrame => "dhcp-frame",
+        PacketError::InvalidMac => "dhcp-mac",
+        PacketError::InvalidCookie => "dhcp-cookie",
+        PacketError::MalformedOptions => "dhcp-options",
+        PacketError::DecodeFailed => "dhcp-message",
+        PacketError::InvalidUdpPorts => "dhcp-ports",
+        PacketError::WrongTransaction => "dhcp-transaction",
+        PacketError::NotBootReply => "dhcp-bootp",
+        PacketError::UnexpectedMessageType => "dhcp-message-type",
+        PacketError::Nak => "dhcp-nak",
+        PacketError::MissingOption => "dhcp-missing-option",
+        PacketError::PacketTooLarge => "dhcp-size",
     };
     report_startup_stage(stage);
 }
