@@ -34,8 +34,8 @@ impl fmt::Debug for AuthenticatorInput<'_> {
             .field("encrypt_token", &"[REDACTED]")
             .field("user_id", &"[REDACTED]")
             .field("stb_id", &"[REDACTED]")
-            .field("ip_address", &self.ip_address)
-            .field("mac", &self.mac)
+            .field("ip_address", &"[REDACTED]")
+            .field("mac", &"[REDACTED]")
             .field("password", &"[REDACTED]")
             .field("custom_str", &"[REDACTED]")
             .field("random_value", &self.random_value)
@@ -166,6 +166,8 @@ mod tests {
         assert!(!rendered.contains("FIXTURE-ENCRYPT-TOKEN"));
         assert!(!rendered.contains("fixture-user"));
         assert!(!rendered.contains("fixture-epg-password-secret"));
+        assert!(!rendered.contains("192.0.2.10"));
+        assert!(!rendered.contains("02:00:00:00:00:01"));
         assert!(rendered.contains("random_value"));
         assert!(rendered.contains("REDACTED"));
     }

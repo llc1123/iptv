@@ -25,43 +25,41 @@ impl PythonPreflight {
             }
         }
         processes.sort_by_key(|(pid, _)| *pid);
-        let Some(expected) = self.expected.as_ref() else {
-            for (_, process) in processes {
-                let argv = read_cmdline(&process)?;
-                if is_unidentified_python_candidate(&argv) {
-                    return Err(StartupRefusal::ProcFieldInaccessible);
-                }
-            }
-            return Ok(());
-        };
+        let entrypoint = self
+            .expected
+            .as_ref()
+            .map_or("iptv-server", |expected| expected.entrypoint.as_str());
         let mut candidates = Vec::new();
         for (_, process) in processes {
             let argv = read_cmdline(&process)?;
-            if !is_candidate(&argv, &expected.entrypoint) {
+            if !is_candidate(&argv, entrypoint) {
                 continue;
             }
-            if is_wrapper(&argv, &expected.entrypoint) {
+            if is_wrapper(&argv, entrypoint) {
                 return Err(StartupRefusal::WrapperMismatch);
             }
-            candidates.push(read_candidate(&process, argv, &expected.entrypoint)?);
+            candidates.push(read_candidate(&process, argv, entrypoint)?);
         }
         match candidates.as_slice() {
             [] => Ok(()),
-            [_] if candidates[0] == *expected => Err(StartupRefusal::PythonConflict),
+            [_] if self
+                .expected
+                .as_ref()
+                .is_some_and(|expected| candidates[0] == *expected) =>
+            {
+                Err(StartupRefusal::PythonConflict)
+            }
+            [_] if self
+                .config_identity
+                .as_ref()
+                .is_some_and(|expected| candidates[0].matches_config(expected)) =>
+            {
+                Err(StartupRefusal::PythonConflict)
+            }
             [_] => Err(StartupRefusal::PythonIdentityMismatch),
             _ => Err(StartupRefusal::MultiplePythonCandidates),
         }
     }
-}
-
-fn is_unidentified_python_candidate(argv: &[String]) -> bool {
-    argv.iter().any(|argument| {
-        let name = std::path::Path::new(argument)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default();
-        name.starts_with("python") || argument.ends_with("service_cli.py")
-    })
 }
 
 fn read_cmdline(process: &Path) -> Result<Vec<String>, StartupRefusal> {
@@ -127,6 +125,16 @@ fn read_candidate(
         state_path,
         argv,
     ))
+}
+
+impl PythonProcessSpec {
+    fn matches_config(&self, expected: &super::preflight::PythonConfigIdentity) -> bool {
+        self.interface == expected.interface
+            && self.host == expected.host
+            && self.port == expected.port
+            && self.guide_cache == expected.guide_cache
+            && self.logo_catalog == expected.logo_catalog
+    }
 }
 
 fn option(argv: &[String], name: &str) -> Option<String> {

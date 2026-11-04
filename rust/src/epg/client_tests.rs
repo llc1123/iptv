@@ -478,7 +478,7 @@ async fn hls_result(body: &str) -> Result<reqwest::Url, EpgError> {
                 write_auth_response(index, &address.to_string(), &mut stream, &request).await;
             } else {
                 assert!(request.contains(
-                    "GET /EPG/jsp/jkjiaoyutest/en/function/ajax/epg7getChannelByAjax.jsp?action=getChannelHlsUrl&channelId=c1 HTTP/1.1"
+                    "GET /EPG/jsp/jkjiaoyutest/en/epg4ChannelPlayByAjax.jsp?action=getChannelHlsUrl&channelId=c1 HTTP/1.1"
                 ));
                 let headers = request.to_ascii_lowercase();
                 assert!(headers.contains("vis-ajax: ajaxhttprequest"));
@@ -492,6 +492,36 @@ async fn hls_result(body: &str) -> Result<reqwest::Url, EpgError> {
         .await;
     server.await.expect("server");
     result
+}
+
+#[tokio::test]
+async fn shutdown_bound_client_cancels_before_starting_authentication() {
+    let source = crate::lifecycle::CancellationSource::new();
+    source.cancel();
+    let client = EpgClient::with_shutdown(
+        EpgConfig {
+            authentication_url: "http://127.0.0.1:1/EDS/jsp/AuthenticationURL".to_owned(),
+            user_id: "fixture-user".to_owned(),
+            password: "fixture-password".to_owned(),
+            stb_id: "fixture-stb".to_owned(),
+            stb_mac: "02:00:00:00:00:01".to_owned(),
+            source_ip: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            stb_type: "fixture-type".to_owned(),
+            area_id: "fixture-area".to_owned(),
+            user_group_id: "fixture-group".to_owned(),
+            nonce: 7,
+            write_timeout: Duration::from_secs(1),
+            pool_timeout: Duration::from_secs(1),
+            media_pool_size: 1,
+        },
+        source.token(),
+    )
+    .expect("build client");
+    let error = client
+        .authenticate()
+        .await
+        .expect_err("shutdown must cancel");
+    assert!(format!("{error:?}").contains("Cancelled"));
 }
 
 fn fixture_client(address: &str) -> EpgClient {

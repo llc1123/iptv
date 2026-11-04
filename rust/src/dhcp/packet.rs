@@ -36,6 +36,12 @@ impl MacAddress {
     pub const fn octets(self) -> [u8; 6] {
         self.0
     }
+
+    /// Returns uppercase hexadecimal octets without separators.
+    #[must_use]
+    pub fn compact_upper(self) -> String {
+        hex::encode_upper(self.0)
+    }
 }
 
 impl FromStr for MacAddress {

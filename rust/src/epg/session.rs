@@ -348,6 +348,9 @@ impl AuthCoordinator {
         F: FnOnce(u64) -> Fut + Send + 'static,
         Fut: Future<Output = FlightResult> + Send + 'static,
     {
+        if self.shutdown.is_cancelled() || shutdown.is_cancelled() {
+            return Err(EpgError::cancelled(EpgErrorStage::Authentication));
+        }
         let (flight, owner) = {
             let mut state = self.state.lock().await;
             if let Some(bundle) = state.current.as_ref() {

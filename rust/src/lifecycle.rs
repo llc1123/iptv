@@ -1,11 +1,11 @@
 //! Cancellation, request draining, instance ownership, and port binding.
 
 use std::fs::{self, File, OpenOptions};
-use std::io;
+use std::io::{self, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -256,6 +256,8 @@ pub struct InstanceLock {
     file: File,
 }
 
+static NEXT_LOCK_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
 impl InstanceLock {
     /// Acquires `instance.lock` below `state_dir` using atomic create-new.
     ///
@@ -271,17 +273,39 @@ impl InstanceLock {
             owner: LOCK_OWNER.to_owned(),
         })
         .map_err(InstanceLockError::Encode)?;
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => {
-                use std::io::Write;
-                file.write_all(&record).map_err(InstanceLockError::Io)?;
-                file.sync_all().map_err(InstanceLockError::Io)?;
+        let temp_path = state_dir.join(format!(
+            ".instance.lock.{}.{}",
+            std::process::id(),
+            NEXT_LOCK_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => file,
+            Err(error) => return Err(InstanceLockError::Io(error)),
+        };
+        if let Err(error) = file.write_all(&record).and_then(|()| file.sync_all()) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(InstanceLockError::Io(error));
+        }
+        match fs::hard_link(&temp_path, &path) {
+            Ok(()) => {
+                if let Err(error) = fs::remove_file(&temp_path) {
+                    let _ = fs::remove_file(&path);
+                    return Err(InstanceLockError::Io(error));
+                }
                 Ok(Self { path, file })
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&temp_path);
                 Err(classify_existing_lock(&path))
             }
-            Err(error) => Err(InstanceLockError::Io(error)),
+            Err(error) => {
+                let _ = fs::remove_file(&temp_path);
+                Err(InstanceLockError::Io(error))
+            }
         }
     }
 
@@ -314,8 +338,28 @@ fn classify_existing_lock(path: &Path) -> InstanceLockError {
 
 impl Drop for InstanceLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if same_lock_file(&self.path, &self.file) {
+            let _ = fs::remove_file(&self.path);
+        }
     }
+}
+
+#[cfg(unix)]
+fn same_lock_file(path: &Path, file: &File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let Ok(path_metadata) = fs::metadata(path) else {
+        return false;
+    };
+    let Ok(file_metadata) = file.metadata() else {
+        return false;
+    };
+    path_metadata.dev() == file_metadata.dev() && path_metadata.ino() == file_metadata.ino()
+}
+
+#[cfg(not(unix))]
+fn same_lock_file(_path: &Path, _file: &File) -> bool {
+    false
 }
 
 /// Errors acquiring the HTTP listener.
@@ -518,6 +562,23 @@ mod tests {
             Err(InstanceLockError::Mismatched)
         ));
         let _ = fs::remove_dir_all(mismatched_dir);
+    }
+
+    #[test]
+    fn dropping_an_old_lock_does_not_remove_a_replacement() {
+        let state_dir = unused_state_dir();
+        let lock_result = InstanceLock::create_new(&state_dir);
+        assert!(lock_result.is_ok());
+        let Some(lock) = lock_result.ok() else {
+            let _ = fs::remove_dir_all(state_dir);
+            return;
+        };
+        let lock_path = lock.path().to_path_buf();
+        assert!(fs::remove_file(&lock_path).is_ok());
+        assert!(fs::write(&lock_path, br#"{"version":1,"owner":"replacement"}"#).is_ok());
+        drop(lock);
+        assert!(lock_path.exists());
+        let _ = fs::remove_dir_all(state_dir);
     }
 
     #[test]

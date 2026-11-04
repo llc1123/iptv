@@ -3,6 +3,8 @@
 use std::fmt;
 use std::path::PathBuf;
 
+use crate::config::Config;
+
 pub(crate) const DEFAULT_INTERFACE: &str = "eth0";
 pub(crate) const DEFAULT_HOST: &str = "127.0.0.1";
 pub(crate) const DEFAULT_GUIDE_CACHE: &str = "var/logo-catalog/guide.json";
@@ -91,6 +93,28 @@ pub struct PythonProcessSpec {
     pub argv: Vec<String>,
 }
 
+/// Configuration-derived identity fields used before a Python process is found.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct PythonConfigIdentity {
+    pub(crate) interface: String,
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) guide_cache: PathBuf,
+    pub(crate) logo_catalog: PathBuf,
+}
+
+impl PythonConfigIdentity {
+    pub(crate) fn from_config(config: &Config) -> Self {
+        Self {
+            interface: config.interface.clone(),
+            host: config.host.clone(),
+            port: config.port,
+            guide_cache: config.guide_cache.clone(),
+            logo_catalog: config.logo_catalog.clone(),
+        }
+    }
+}
+
 impl fmt::Debug for PythonProcessSpec {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("PythonProcessSpec([redacted])")
@@ -138,6 +162,7 @@ impl PythonProcessSpec {
 pub struct PythonPreflight {
     pub(crate) proc_root: PathBuf,
     pub(crate) expected: Option<PythonProcessSpec>,
+    pub(crate) config_identity: Option<PythonConfigIdentity>,
 }
 
 impl fmt::Debug for PythonPreflight {
@@ -153,15 +178,17 @@ impl PythonPreflight {
         Self {
             proc_root,
             expected: Some(expected),
+            config_identity: None,
         }
     }
 
-    /// Creates a production preflight without inventing a Python identity.
+    /// Creates a production preflight from verified Rust configuration facts.
     #[must_use]
-    pub fn without_expected_identity(proc_root: PathBuf) -> Self {
+    pub(crate) fn for_config(proc_root: PathBuf, config: &Config) -> Self {
         Self {
             proc_root,
             expected: None,
+            config_identity: Some(PythonConfigIdentity::from_config(config)),
         }
     }
 }

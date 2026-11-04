@@ -111,7 +111,7 @@ ENV_ARGS=(
 )
 [[ -n "${CONFIG[IPTV_EPG_MAC]+x}" ]] && ENV_ARGS+=("IPTV_EPG_MAC=${CONFIG[IPTV_EPG_MAC]}")
 setsid env -i "${ENV_ARGS[@]}" timeout --signal=TERM --kill-after=10s 300s "$SERVER" \
-    --interface "${CONFIG[IPTV_INTERFACE]}" --host 127.0.0.1 --port 0 \
+    --interface "${CONFIG[IPTV_INTERFACE]}" --host 127.0.0.1 --port 8080 \
     >"$RUN_DIR/server.out" 2>"$RUN_DIR/server.err" &
 SERVER_PID=$!
 wait "$SERVER_PID"

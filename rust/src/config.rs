@@ -179,14 +179,14 @@ impl fmt::Debug for Arguments {
         formatter
             .debug_struct("Arguments")
             .field("interface", &self.interface)
-            .field("epg_mac", &self.epg_mac)
-            .field("stb_id", &self.stb_id)
-            .field("stb_id_prefix", &self.stb_id_prefix)
+            .field("epg_mac", &"[REDACTED]")
+            .field("stb_id", &"[REDACTED]")
+            .field("stb_id_prefix", &"[REDACTED]")
             .field("dhcp_user", &"[REDACTED]")
             .field("dhcp_password", &"[REDACTED]")
             .field("epg_user", &"[REDACTED]")
             .field("epg_password", &"[REDACTED]")
-            .field("authentication_url", &self.authentication_url)
+            .field("authentication_url", &"[REDACTED]")
             .field("host", &self.host)
             .field("port", &self.port)
             .field("guide_past_days", &self.guide_past_days)
@@ -195,9 +195,15 @@ impl fmt::Debug for Arguments {
             .field("guide_cache", &self.guide_cache)
             .field("logo_catalog", &self.logo_catalog)
             .field("refresh_interval_seconds", &self.refresh_interval_seconds)
-            .field("routes", &self.routes)
-            .field("upstream_allow_hosts", &self.upstream_allow_hosts)
-            .field("upstream_allow_cidrs", &self.upstream_allow_cidrs)
+            .field("routes", &format_args!("[{} entries]", self.routes.len()))
+            .field(
+                "upstream_allow_hosts",
+                &format_args!("[{} entries]", self.upstream_allow_hosts.len()),
+            )
+            .field(
+                "upstream_allow_cidrs",
+                &format_args!("[{} entries]", self.upstream_allow_cidrs.len()),
+            )
             .field("shutdown_grace_seconds", &self.shutdown_grace_seconds)
             .finish()
     }
@@ -209,7 +215,26 @@ impl Config {
     /// # Errors
     /// Returns [`AppError`] when parsing fails or a required configuration value is invalid.
     pub fn from_environment() -> Result<Self, AppError> {
-        let arguments = Arguments::try_parse()?;
+        let arguments = match Arguments::try_parse() {
+            Ok(arguments) => arguments,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+                ) =>
+            {
+                let kind = if error.kind() == clap::error::ErrorKind::DisplayHelp {
+                    crate::error::ArgumentError::Help
+                } else {
+                    crate::error::ArgumentError::Version
+                };
+                if error.print().is_err() {
+                    return Err(AppError::Arguments(crate::error::ArgumentError::Invalid));
+                }
+                return Err(AppError::Arguments(kind));
+            }
+            Err(error) => return Err(error.into()),
+        };
         Self::try_from(arguments).map_err(AppError::from)
     }
 
@@ -400,7 +425,7 @@ mod tests {
         assert!(rendered.contains("eth0"));
         assert!(rendered.contains("port"));
         assert!(rendered.contains("8080"));
-        assert_eq!(rendered.matches("[REDACTED]").count(), 4);
+        assert_eq!(rendered.matches("[REDACTED]").count(), 8);
     }
 
     #[test]

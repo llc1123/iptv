@@ -6,9 +6,7 @@ async fn main() {
         Ok(config) => config,
         Err(error) => {
             let exit_code = error.exit_code();
-            if exit_code == 0 {
-                println!("{error}");
-            } else {
+            if exit_code != 0 {
                 eprintln!("error: {error}");
             }
             std::process::exit(exit_code);

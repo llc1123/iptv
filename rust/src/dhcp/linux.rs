@@ -145,10 +145,10 @@ impl fmt::Debug for ClientConfig<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ClientConfig")
-            .field("mac", &self.mac)
+            .field("mac", &"[REDACTED]")
             .field("user", &"[REDACTED]")
             .field("password", &"[REDACTED]")
-            .field("hostname", &self.hostname)
+            .field("hostname", &"[REDACTED]")
             .finish()
     }
 }
@@ -903,6 +903,8 @@ mod tests {
         );
         assert!(!rendered.contains("fixture-user-secret"));
         assert!(!rendered.contains("fixture-password-secret"));
+        assert!(!rendered.contains("02:00:00:00:00:01"));
+        assert!(!rendered.contains("STB"));
         assert!(rendered.contains("mac"));
         assert!(rendered.contains("REDACTED"));
     }

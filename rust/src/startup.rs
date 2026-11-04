@@ -29,7 +29,6 @@ use crate::preflight::{PythonPreflight, StartupRefusal, acquire_startup_gate};
 use crate::refresh::{EpgMetadataSource, RefreshEngine, RefreshEngineConfig, RefreshSupervisor};
 use crate::snapshot::{Snapshot, SnapshotStore};
 
-const DHCP_JOIN_TIMEOUT: Duration = Duration::from_secs(30);
 const REFRESH_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Runs admission, network setup, metadata bootstrap, readiness, and serving.
@@ -49,15 +48,27 @@ pub async fn run(config: Config) -> Result<(), AppError> {
         config.guide_future_days,
     )
     .map_err(|_| startup_error())?;
-    let state_dir = state_dir(&config);
-    let preflight = PythonPreflight::without_expected_identity(PathBuf::from("/proc"));
-    let gate = acquire_startup_gate(&config, &state_dir, &preflight).map_err(map_refusal)?;
     let cancellation = CancellationSource::new();
     let signal_task = tokio::spawn(signal_watcher(cancellation.clone()));
+    let state_dir = state_dir(&config);
+    let preflight = PythonPreflight::for_config(PathBuf::from("/proc"), &config);
+    let gate = match acquire_startup_gate(&config, &state_dir, &preflight) {
+        Ok(gate) => gate,
+        Err(refusal) => {
+            cancellation.cancel();
+            let _ = signal_task.await;
+            return Err(map_refusal(refusal));
+        }
+    };
+    if cancellation.token().is_cancelled() {
+        drop(gate);
+        let _ = signal_task.await;
+        return Err(startup_error());
+    }
 
     let startup = compose_after_gate(&config, zone, windows, gate, cancellation.clone()).await;
     cancellation.cancel();
-    let _ = tokio::time::timeout(DHCP_JOIN_TIMEOUT, signal_task).await;
+    let _ = signal_task.await;
     startup
 }
 
@@ -139,34 +150,26 @@ async fn prepare_engine(
     interface_mac: MacAddress,
     token: CancellationToken,
 ) -> Result<Prepared, AppError> {
-    let effective_mac = config
-        .epg_mac
-        .clone()
-        .unwrap_or_else(|| interface_mac.to_string());
-    let stb_id = if config.stb_id.is_empty() {
-        format!(
-            "{}{}",
-            config.stb_id_prefix,
-            interface_mac.to_string().replace(':', "").to_uppercase()
-        )
-    } else {
-        config.stb_id.clone()
-    };
-    let client = EpgClient::new(EpgConfig {
-        authentication_url: config.authentication_url.clone(),
-        user_id: config.epg_user.as_str().to_owned(),
-        password: config.epg_password.as_str().to_owned(),
-        stb_id,
-        stb_mac: effective_mac.clone(),
-        source_ip: IpAddr::V4(lease.address),
-        stb_type: "E900V21D".to_owned(),
-        area_id: "021".to_owned(),
-        user_group_id: "2025".to_owned(),
-        nonce: 0,
-        write_timeout: Duration::from_secs(30),
-        pool_timeout: Duration::from_secs(5),
-        media_pool_size: 8,
-    })
+    let (stb_id, effective_mac) =
+        epg_identity(&config.stb_id, config.epg_mac.as_deref(), interface_mac);
+    let client = EpgClient::with_shutdown(
+        EpgConfig {
+            authentication_url: config.authentication_url.clone(),
+            user_id: config.epg_user.as_str().to_owned(),
+            password: config.epg_password.as_str().to_owned(),
+            stb_id,
+            stb_mac: effective_mac.clone(),
+            source_ip: IpAddr::V4(lease.address),
+            stb_type: "E900V21D".to_owned(),
+            area_id: "021".to_owned(),
+            user_group_id: "2025".to_owned(),
+            nonce: fresh_epg_nonce()?,
+            write_timeout: Duration::from_secs(30),
+            pool_timeout: Duration::from_secs(5),
+            media_pool_size: 8,
+        },
+        token.clone(),
+    )
     .map_err(|_| startup_error())?;
     let source = Arc::new(EpgMetadataSource::new(client.clone()));
     let channels = source
@@ -261,21 +264,29 @@ async fn acquire_dhcp(
     let interface = config.interface.clone();
     let dhcp_user = config.dhcp_user.as_str().to_owned();
     let dhcp_password = config.dhcp_password.as_str().to_owned();
-    let hostname = config.stb_id.as_bytes().to_vec();
+    let stb_id_prefix = config.stb_id_prefix.clone();
     let routes = config.routes.clone();
+    let worker_cancellation = cancellation.clone();
     let mut task = tokio::task::spawn_blocking(move || {
+        if worker_cancellation.is_cancelled() {
+            return Err(startup_error());
+        }
         let mut platform = LinuxPlatform::new(&interface).map_err(|_| startup_error())?;
         platform.preflight().map_err(|_| startup_error())?;
         let mac = platform.interface_mac().map_err(|_| startup_error())?;
+        let hostname = dhcp_hostname(&stb_id_prefix, mac);
         let client_config = ClientConfig {
             mac,
             user: &dhcp_user,
             password: &dhcp_password,
-            hostname: &hostname,
+            hostname: hostname.as_slice(),
         };
         let mut client = DhcpClient::new(platform, client_config);
         let lease = client.acquire().map_err(|_| startup_error())?;
         let mut platform = client.into_platform();
+        if worker_cancellation.is_cancelled() {
+            return Err(startup_error());
+        }
         match configure_interface(&mut platform, &interface, &lease, &routes) {
             Ok(LifecycleResult::Applied(lease)) => Ok((lease, mac)),
             Ok(LifecycleResult::Preserved { .. }) | Err(_) => Err(startup_error()),
@@ -284,12 +295,35 @@ async fn acquire_dhcp(
     tokio::select! {
         result = &mut task => result.map_err(|_| startup_error())?,
         () = cancellation.cancelled() => {
-            let _ = tokio::time::timeout(DHCP_JOIN_TIMEOUT, &mut task).await;
-            task.abort();
-            drop(task.await);
+            let _ = task.await;
             Err(startup_error())
         }
     }
+}
+
+fn dhcp_hostname(prefix: &str, mac: MacAddress) -> Vec<u8> {
+    format!("{prefix}{}", mac.compact_upper()).into_bytes()
+}
+
+fn epg_identity(
+    stb_id: &str,
+    epg_mac: Option<&str>,
+    interface_mac: MacAddress,
+) -> (String, String) {
+    (
+        stb_id.to_owned(),
+        epg_mac.map_or_else(|| interface_mac.to_string().to_uppercase(), str::to_owned),
+    )
+}
+
+fn fresh_epg_nonce() -> Result<u32, AppError> {
+    use ring::rand::{SecureRandom, SystemRandom};
+
+    let mut bytes = [0_u8; 4];
+    SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| startup_error())?;
+    Ok(u32::from_ne_bytes(bytes) % 100_000_000)
 }
 
 async fn signal_watcher(source: CancellationSource) {
@@ -334,7 +368,8 @@ fn map_refusal(_refusal: StartupRefusal) -> AppError {
 
 #[cfg(test)]
 mod tests {
-    use super::signal_watcher;
+    use super::{dhcp_hostname, epg_identity, fresh_epg_nonce, signal_watcher};
+    use crate::dhcp::MacAddress;
     use crate::lifecycle::CancellationSource;
 
     #[tokio::test]
@@ -346,5 +381,31 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_secs(1), task).await,
             Ok(Ok(()))
         ));
+    }
+
+    #[test]
+    fn dhcp_hostname_matches_python_identity_format() {
+        let mac = MacAddress::new([0x02, 0x0a, 0xb0, 0xc0, 0xd0, 0xe0]);
+        assert_eq!(dhcp_hostname("STB-", mac), b"STB-020AB0C0D0E0");
+    }
+
+    #[test]
+    fn epg_identity_uses_uppercase_interface_mac_only_as_default() {
+        let mac = MacAddress::new([0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee]);
+        assert_eq!(
+            epg_identity("", None, mac),
+            (String::new(), "02:AA:BB:CC:DD:EE".to_owned())
+        );
+        assert_eq!(
+            epg_identity("configured", Some("configured-mac"), mac),
+            ("configured".to_owned(), "configured-mac".to_owned())
+        );
+    }
+
+    #[test]
+    fn fresh_epg_nonce_is_always_provider_valid() {
+        for _ in 0..8 {
+            assert!(matches!(fresh_epg_nonce(), Ok(value) if value <= 99_999_999));
+        }
     }
 }

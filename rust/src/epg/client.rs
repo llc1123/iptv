@@ -14,8 +14,8 @@ use tokio::sync::Semaphore;
 use crate::crypto::epg_auth::{AuthenticatorInput, identity_encode, make_authenticator};
 
 use super::request::send_with_client_retry;
-use super::session::AuthCoordinator;
 use super::session::SessionBundle;
+use super::session::{AuthCoordinator, SessionClock};
 use super::{
     ChannelGroupSource, merge_category_groups, parse_boot_channels, parse_channel_list,
     parse_programmes, parse_tvod, tvod_times_seconds,
@@ -24,6 +24,7 @@ use crate::lifecycle::CancellationToken;
 
 const CHANNELS_PATH: &str = "/EPG/jsp/getchannellistHWCU.jsp";
 const CHANNEL_AJAX_PATH: &str = "/EPG/jsp/jkjiaoyutest/en/function/ajax/epg7getChannelByAjax.jsp";
+const HLS_PATH: &str = "/EPG/jsp/jkjiaoyutest/en/epg4ChannelPlayByAjax.jsp";
 const TVOD_RESPONSE_LIMIT: usize = 1024 * 1024;
 const LIVE_CATEGORY_ID: &str = "10000100000000090000000000001692";
 const GROUP_CATEGORIES: [(&str, &str); 7] = [
@@ -300,6 +301,17 @@ impl EpgClient {
     /// Returns a redacted transport error when reqwest rejects client construction.
     pub fn new(config: EpgConfig) -> Result<Self, EpgError> {
         Self::with_coordinator(config, AuthCoordinator::default())
+    }
+
+    /// Creates a client whose coordinator observes service shutdown.
+    ///
+    /// # Errors
+    /// Returns a redacted transport error when reqwest rejects client construction.
+    pub fn with_shutdown(config: EpgConfig, shutdown: CancellationToken) -> Result<Self, EpgError> {
+        Self::with_coordinator(
+            config,
+            AuthCoordinator::with_shutdown(Arc::new(SessionClock), shutdown),
+        )
     }
 
     /// Creates a client with an injected authentication coordinator.
@@ -643,7 +655,7 @@ impl EpgClient {
     ) -> Result<super::models::HlsAddress, EpgError> {
         let path = session
             .origin()
-            .join(CHANNEL_AJAX_PATH)
+            .join(HLS_PATH)
             .map_err(|_| EpgError::class(EpgErrorStage::Request, EpgErrorClass::InvalidOrigin))?;
         let mut path = path;
         path.query_pairs_mut()
