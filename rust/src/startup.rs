@@ -40,7 +40,10 @@ pub async fn run(config: Config) -> Result<(), AppError> {
         .guide_timezone
         .parse::<Tz>()
         .map(GuideZone::Iana)
-        .map_err(|_| startup_error())?;
+        .map_err(|_| {
+            report_startup_stage("guide-window");
+            startup_error()
+        })?;
     let windows = build_windows_from_clock(
         &SystemGuideClock,
         &zone,
@@ -99,13 +102,7 @@ async fn compose_after_gate(
         }
     };
     let prepared =
-        match prepare_engine(config, zone, windows, lease, interface_mac, token.clone()).await {
-            Ok(value) => value,
-            Err(error) => {
-                report_startup_stage("epg-or-refresh");
-                return Err(error);
-            }
-        };
+        prepare_engine(config, zone, windows, lease, interface_mac, token.clone()).await?;
     let tokens = Arc::new(TokenStore::default());
     let policy = Arc::new(
         HlsPolicy::new(
@@ -186,7 +183,10 @@ async fn prepare_engine(
             stb_type: "E900V21D".to_owned(),
             area_id: "021".to_owned(),
             user_group_id: "2025".to_owned(),
-            nonce: fresh_epg_nonce()?,
+            nonce: fresh_epg_nonce().map_err(|_| {
+                report_startup_stage("epg-client");
+                startup_error()
+            })?,
             write_timeout: Duration::from_secs(30),
             pool_timeout: Duration::from_secs(5),
             media_pool_size: 8,
@@ -203,7 +203,10 @@ async fn prepare_engine(
         startup_error()
     })?;
     let fingerprint =
-        CacheFingerprint::from_config(config, Some(&effective_mac)).map_err(|_| startup_error())?;
+        CacheFingerprint::from_config(config, Some(&effective_mac)).map_err(|_| {
+            report_startup_stage("cache");
+            startup_error()
+        })?;
     let cache = GuideCache::new(config.guide_cache.clone());
     let cache_state = cache.load_with_refresh_interval(
         Utc::now().timestamp_millis(),

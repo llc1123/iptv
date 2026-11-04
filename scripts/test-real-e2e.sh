@@ -94,7 +94,7 @@ report_failure_stage() {
     [[ -f "$RUN_DIR/server.err" ]] || return 0
     while IFS= read -r line; do
         case "$line" in
-            startup_stage=preflight|startup_stage=guide-window|startup_stage=dhcp|startup_stage=epg-client|startup_stage=epg-bootstrap|startup_stage=epg-or-refresh|startup_stage=warm-cache|startup_stage=hls-policy|startup_stage=first-snapshot|startup_stage=serve)
+            startup_stage=preflight|startup_stage=guide-window|startup_stage=dhcp|startup_stage=epg-client|startup_stage=epg-bootstrap|startup_stage=cache|startup_stage=warm-cache|startup_stage=hls-policy|startup_stage=first-snapshot|startup_stage=serve)
                 printf 'STARTUP_STAGE: %s\n' "${line#startup_stage=}" >&2
                 ;;
         esac
