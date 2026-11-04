@@ -484,6 +484,16 @@ impl RefreshEngine {
             .iter()
             .filter(|outcome| outcome.programmes.is_none())
             .count();
+        let fetched_invalid_interval = outcomes
+            .iter()
+            .filter_map(|outcome| outcome.programmes.as_ref())
+            .flatten()
+            .any(|programme| programme.start_time_ms >= programme.end_time_ms);
+        let prior_invalid_interval = previous
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .any(|programme| programme.start_time_ms >= programme.end_time_ms);
         let programmes = merge_windows(previous.as_deref().unwrap_or(&[]), &outcomes);
         let channels = carry_logos(self.prior.as_ref(), channels);
         let logos = LogoView::from_channels(&channels);
@@ -505,6 +515,12 @@ impl RefreshEngine {
                 crate::startup::report_startup_stage(match error {
                     SnapshotError::ProgrammeLimit => "refresh-programme-limit",
                     SnapshotError::ProgrammeConflict => "refresh-programme-conflict",
+                    SnapshotError::ProgrammeInterval if fetched_invalid_interval => {
+                        "refresh-window-interval"
+                    }
+                    SnapshotError::ProgrammeInterval if prior_invalid_interval => {
+                        "refresh-prior-interval"
+                    }
                     SnapshotError::ProgrammeInterval => "refresh-programme-interval",
                     SnapshotError::TooManyChannels
                     | SnapshotError::InvalidChannelIdentifiers
