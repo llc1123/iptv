@@ -444,6 +444,8 @@ fn report_packet_stage(error: &PacketError) {
         PacketError::UnexpectedMessageType => "dhcp-message-type",
         PacketError::Nak => "dhcp-nak",
         PacketError::MissingOption => "dhcp-missing-option",
+        PacketError::MissingMessageType => "dhcp-message-type-missing",
+        PacketError::MissingAckOption => "dhcp-ack-option-missing",
         PacketError::InvalidOptionLength(code) => match code {
             1 => "dhcp-subnet-mask",
             3 => "dhcp-router",

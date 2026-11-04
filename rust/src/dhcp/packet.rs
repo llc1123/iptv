@@ -144,6 +144,12 @@ pub enum PacketError {
     /// A required option is absent or has the wrong length.
     #[error("DHCP reply lacks a required option")]
     MissingOption,
+    /// The DHCP message-type option is absent.
+    #[error("DHCP reply lacks a message type")]
+    MissingMessageType,
+    /// An ACK is missing one of its required lease fields.
+    #[error("DHCP ACK lacks a required lease option")]
+    MissingAckOption,
     /// An optional DHCP option carried an invalid fixed-width value.
     #[error("DHCP option has an invalid length")]
     InvalidOptionLength(u8),
@@ -341,7 +347,7 @@ pub fn decode_reply(
             || subnet_mask.is_none()
             || router.is_none())
     {
-        return Err(PacketError::MissingOption);
+        return Err(PacketError::MissingAckOption);
     }
     Ok(DhcpReply {
         xid,
@@ -475,7 +481,7 @@ fn parse_options(raw: &[u8]) -> Result<HashMap<u8, Vec<u8>>, PacketError> {
 }
 
 fn option_bytes(options: &HashMap<u8, Vec<u8>>, code: u8) -> Result<&[u8], PacketError> {
-    option_bytes_optional(options, code).ok_or(PacketError::MissingOption)
+    option_bytes_optional(options, code).ok_or(PacketError::MissingMessageType)
 }
 
 fn option_bytes_optional(options: &HashMap<u8, Vec<u8>>, code: u8) -> Option<&[u8]> {
@@ -694,7 +700,7 @@ mod tests {
         );
         assert_eq!(
             decode_reply(&missing, 7, MAC, ReplyKind::Ack),
-            Err(PacketError::MissingOption)
+            Err(PacketError::MissingAckOption)
         );
         assert_eq!(
             decode_reply(&valid[..valid.len() - 1], 7, MAC, ReplyKind::Ack),
