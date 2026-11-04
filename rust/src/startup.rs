@@ -444,6 +444,13 @@ fn report_packet_stage(error: &PacketError) {
         PacketError::UnexpectedMessageType => "dhcp-message-type",
         PacketError::Nak => "dhcp-nak",
         PacketError::MissingOption => "dhcp-missing-option",
+        PacketError::InvalidOptionLength(code) => match code {
+            1 => "dhcp-subnet-mask",
+            3 => "dhcp-router",
+            51 => "dhcp-lease-time",
+            54 => "dhcp-server-id",
+            _ => "dhcp-option-length",
+        },
         PacketError::PacketTooLarge => "dhcp-size",
     };
     report_startup_stage(stage);

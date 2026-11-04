@@ -144,6 +144,9 @@ pub enum PacketError {
     /// A required option is absent or has the wrong length.
     #[error("DHCP reply lacks a required option")]
     MissingOption,
+    /// An optional DHCP option carried an invalid fixed-width value.
+    #[error("DHCP option has an invalid length")]
+    InvalidOptionLength(u8),
     /// The generated packet could not be represented.
     #[error("DHCP packet is too large")]
     PacketTooLarge,
@@ -487,7 +490,7 @@ fn option_ipv4_optional(
         return Ok(None);
     };
     if value.len() != 4 {
-        return Err(PacketError::MissingOption);
+        return Err(PacketError::InvalidOptionLength(code));
     }
     Ok(Some(Ipv4Addr::from([
         value[0], value[1], value[2], value[3],
@@ -502,7 +505,7 @@ fn option_u32_optional(
         return Ok(None);
     };
     if value.len() != 4 {
-        return Err(PacketError::MissingOption);
+        return Err(PacketError::InvalidOptionLength(code));
     }
     Ok(Some(u32::from_be_bytes([
         value[0], value[1], value[2], value[3],
