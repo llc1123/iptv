@@ -90,6 +90,7 @@ impl MetadataSource for FakeSource {
             } else if reauthenticated_generation && session.generation() != 2 {
                 Err(MetadataError::Authentication(
                     crate::epg::EpgErrorStage::Authentication,
+                    crate::epg::EpgErrorClass::MissingField,
                 ))
             } else {
                 Ok(vec![programme("c1", window.start_ms, window.end_ms, "p1")])

@@ -33,7 +33,7 @@ pub enum MetadataError {
     /// The current session expired and one reauthentication/replay is allowed.
     SessionExpired,
     /// Authentication itself failed and the cycle must stop.
-    Authentication(crate::epg::EpgErrorStage),
+    Authentication(crate::epg::EpgErrorStage, crate::epg::EpgErrorClass),
     /// A non-authentication provider or parser failure.
     Business,
     /// The caller cancelled the operation.
@@ -72,7 +72,7 @@ impl From<EpgError> for MetadataError {
                 | EpgErrorStage::Authentication),
                 _,
                 _,
-            ) => Self::Authentication(stage),
+            ) => Self::Authentication(stage, error.class_code()),
             (_, EpgErrorClass::Cancelled, _) => Self::Cancelled,
             _ => Self::Business,
         }
@@ -189,6 +189,7 @@ impl MetadataSource for EpgMetadataSource {
             else {
                 return Err(MetadataError::Authentication(
                     crate::epg::EpgErrorStage::Authentication,
+                    crate::epg::EpgErrorClass::MissingField,
                 ));
             };
             tokio::select! {
@@ -215,6 +216,7 @@ impl MetadataSource for EpgMetadataSource {
             else {
                 return Err(MetadataError::Authentication(
                     crate::epg::EpgErrorStage::Authentication,
+                    crate::epg::EpgErrorClass::MissingField,
                 ));
             };
             tokio::select! {

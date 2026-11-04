@@ -14,7 +14,7 @@ use crate::dhcp::linux::{
 };
 use crate::dhcp::packet::{MacAddress, PacketError};
 use crate::dhcp::{DhcpError, LifecycleResult};
-use crate::epg::{EpgClient, EpgConfig, EpgErrorStage};
+use crate::epg::{EpgClient, EpgConfig, EpgErrorClass, EpgErrorStage};
 use crate::error::{AppError, StartupError};
 use crate::guide::{
     CacheFingerprint, GuideCache, GuideZone, SystemGuideClock, build_windows_from_clock,
@@ -424,10 +424,22 @@ fn report_startup_stage(stage: &'static str) {
 
 fn report_epg_auth_stage(error: crate::refresh::MetadataError) {
     let stage = match error {
-        crate::refresh::MetadataError::Authentication(EpgErrorStage::Discovery) => "epg-discovery",
-        crate::refresh::MetadataError::Authentication(EpgErrorStage::Login) => "epg-login",
-        crate::refresh::MetadataError::Authentication(EpgErrorStage::Authentication) => {
-            "epg-authentication"
+        crate::refresh::MetadataError::Authentication(EpgErrorStage::Discovery, _) => {
+            "epg-discovery"
+        }
+        crate::refresh::MetadataError::Authentication(
+            EpgErrorStage::Login,
+            EpgErrorClass::MissingField | EpgErrorClass::Parse,
+        ) => "epg-login-parse",
+        crate::refresh::MetadataError::Authentication(EpgErrorStage::Login, _) => {
+            "epg-login-request"
+        }
+        crate::refresh::MetadataError::Authentication(
+            EpgErrorStage::Authentication,
+            EpgErrorClass::MissingField | EpgErrorClass::Parse,
+        ) => "epg-authentication-parse",
+        crate::refresh::MetadataError::Authentication(EpgErrorStage::Authentication, _) => {
+            "epg-authentication-request"
         }
         _ => "epg-auth",
     };
