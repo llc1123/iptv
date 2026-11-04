@@ -149,7 +149,7 @@ pub enum PacketError {
     MissingMessageType,
     /// An ACK is missing one of its required lease fields.
     #[error("DHCP ACK lacks a required lease option")]
-    MissingAckOption,
+    MissingAckOption(u8),
     /// An optional DHCP option carried an invalid fixed-width value.
     #[error("DHCP option has an invalid length")]
     InvalidOptionLength(u8),
@@ -340,14 +340,22 @@ pub fn decode_reply(
     let vendor_specific = option_bytes_optional(&options, 43).map(ToOwned::to_owned);
     let subnet_mask = option_ipv4_optional(&options, 1)?;
     let router = option_ipv4_optional(&options, 3)?;
-    if expected_kind == ReplyKind::Ack
-        && (server.is_none()
-            || lease_seconds.is_none()
-            || vendor_specific.is_none()
-            || subnet_mask.is_none()
-            || router.is_none())
-    {
-        return Err(PacketError::MissingAckOption);
+    if expected_kind == ReplyKind::Ack {
+        if server.is_none() {
+            return Err(PacketError::MissingAckOption(54));
+        }
+        if lease_seconds.is_none() {
+            return Err(PacketError::MissingAckOption(51));
+        }
+        if vendor_specific.is_none() {
+            return Err(PacketError::MissingAckOption(43));
+        }
+        if subnet_mask.is_none() {
+            return Err(PacketError::MissingAckOption(1));
+        }
+        if router.is_none() {
+            return Err(PacketError::MissingAckOption(3));
+        }
     }
     Ok(DhcpReply {
         xid,
@@ -700,7 +708,7 @@ mod tests {
         );
         assert_eq!(
             decode_reply(&missing, 7, MAC, ReplyKind::Ack),
-            Err(PacketError::MissingAckOption)
+            Err(PacketError::MissingAckOption(43))
         );
         assert_eq!(
             decode_reply(&valid[..valid.len() - 1], 7, MAC, ReplyKind::Ack),

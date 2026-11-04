@@ -445,7 +445,14 @@ fn report_packet_stage(error: &PacketError) {
         PacketError::Nak => "dhcp-nak",
         PacketError::MissingOption => "dhcp-missing-option",
         PacketError::MissingMessageType => "dhcp-message-type-missing",
-        PacketError::MissingAckOption => "dhcp-ack-option-missing",
+        PacketError::MissingAckOption(code) => match code {
+            1 => "dhcp-ack-subnet-mask-missing",
+            3 => "dhcp-ack-router-missing",
+            43 => "dhcp-ack-vendor-missing",
+            51 => "dhcp-ack-lease-time-missing",
+            54 => "dhcp-ack-server-id-missing",
+            _ => "dhcp-ack-option-missing",
+        },
         PacketError::InvalidOptionLength(code) => match code {
             1 => "dhcp-subnet-mask",
             3 => "dhcp-router",
