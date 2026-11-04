@@ -100,7 +100,7 @@ pub struct DhcpReply {
     pub server: Option<Ipv4Addr>,
     /// DHCP option 51, when present.
     pub lease_seconds: Option<u32>,
-    /// DHCP option 43, when present.
+    /// DHCP option 125, when present.
     pub vendor_specific: Option<Vec<u8>>,
     /// DHCP option 1, when present.
     pub subnet_mask: Option<Ipv4Addr>,
@@ -744,7 +744,7 @@ mod tests {
             &[
                 (53, &[5]),
                 (51, &lease),
-                (43, &[0x10]),
+                (125, &[0x10]),
                 (1, &mask),
                 (3, &router),
                 (54, &first_server),
