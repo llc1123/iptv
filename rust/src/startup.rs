@@ -9,9 +9,11 @@ use chrono::Utc;
 use chrono_tz::Tz;
 
 use crate::config::Config;
-use crate::dhcp::LifecycleResult;
-use crate::dhcp::linux::{ClientConfig, DhcpClient, LinuxPlatform, Platform, configure_interface};
+use crate::dhcp::linux::{
+    ClientConfig, DhcpClient, LinuxError, LinuxPlatform, Platform, configure_interface,
+};
 use crate::dhcp::packet::MacAddress;
+use crate::dhcp::{DhcpError, LifecycleResult};
 use crate::epg::{EpgClient, EpgConfig};
 use crate::error::{AppError, StartupError};
 use crate::guide::{
@@ -304,9 +306,18 @@ async fn acquire_dhcp(
         if worker_cancellation.is_cancelled() {
             return Err(startup_error());
         }
-        let mut platform = LinuxPlatform::new(&interface).map_err(|_| startup_error())?;
-        platform.preflight().map_err(|_| startup_error())?;
-        let mac = platform.interface_mac().map_err(|_| startup_error())?;
+        let mut platform = LinuxPlatform::new(&interface).map_err(|_| {
+            report_startup_stage("dhcp-platform");
+            startup_error()
+        })?;
+        platform.preflight().map_err(|_| {
+            report_startup_stage("dhcp-preflight");
+            startup_error()
+        })?;
+        let mac = platform.interface_mac().map_err(|_| {
+            report_startup_stage("dhcp-interface");
+            startup_error()
+        })?;
         let hostname = dhcp_hostname(&stb_id_prefix, mac);
         let client_config = ClientConfig {
             mac,
@@ -315,14 +326,20 @@ async fn acquire_dhcp(
             hostname: hostname.as_slice(),
         };
         let mut client = DhcpClient::new(platform, client_config);
-        let lease = client.acquire().map_err(|_| startup_error())?;
+        let lease = client.acquire().map_err(|error| {
+            report_dhcp_stage(&error);
+            startup_error()
+        })?;
         let mut platform = client.into_platform();
         if worker_cancellation.is_cancelled() {
             return Err(startup_error());
         }
         match configure_interface(&mut platform, &interface, &lease, &routes) {
             Ok(LifecycleResult::Applied(lease)) => Ok((lease, mac)),
-            Ok(LifecycleResult::Preserved { .. }) | Err(_) => Err(startup_error()),
+            Ok(LifecycleResult::Preserved { .. }) | Err(_) => {
+                report_startup_stage("dhcp-interface-setup");
+                Err(startup_error())
+            }
         }
     });
     tokio::select! {
@@ -397,6 +414,18 @@ fn startup_error() -> AppError {
 
 fn report_startup_stage(stage: &'static str) {
     eprintln!("startup_stage={stage}");
+}
+
+fn report_dhcp_stage(error: &DhcpError) {
+    let stage = match error {
+        DhcpError::Crypto(_) => "dhcp-option60",
+        DhcpError::Packet(_) => "dhcp-packet",
+        DhcpError::Lease(_) => "dhcp-lease",
+        DhcpError::StageTimeout | DhcpError::Platform(LinuxError::Timeout) => "dhcp-timeout",
+        DhcpError::Platform(LinuxError::Io) => "dhcp-socket",
+        DhcpError::Platform(_) => "dhcp-platform",
+    };
+    report_startup_stage(stage);
 }
 
 fn map_refusal(_refusal: StartupRefusal) -> AppError {
