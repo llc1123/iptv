@@ -70,6 +70,7 @@ pub async fn run(config: Config) -> Result<(), AppError> {
     if cancellation.token().is_cancelled() {
         drop(gate);
         let _ = signal_task.await;
+        report_startup_stage("preflight");
         return Err(startup_error());
     }
 
