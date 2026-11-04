@@ -11,8 +11,10 @@ use render_writer::{
     Writer, validate_line_fields, validate_xml_value, write_component, xml_attr, xml_text,
 };
 
-/// Maximum accepted base URL length and rendered response size.
+/// Maximum accepted base URL length and M3U response size.
 pub const MAX_RENDER_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum XMLTV response size for the full provider guide window.
+pub const MAX_XMLTV_BYTES: usize = 32 * 1024 * 1024;
 
 #[path = "render_base.rs"]
 mod render_base;
@@ -82,9 +84,9 @@ pub fn render_xmltv(
     zone: &GuideZone,
     base_url: &BaseUrl,
 ) -> Result<Vec<u8>, RenderError> {
-    let mut measure = Writer::measure(MAX_RENDER_BYTES);
+    let mut measure = Writer::measure(MAX_XMLTV_BYTES);
     write_xmltv(&mut measure, channels, programmes, zone, base_url)?;
-    let mut writer = Writer::output(MAX_RENDER_BYTES, measure.count)?;
+    let mut writer = Writer::output(MAX_XMLTV_BYTES, measure.count)?;
     write_xmltv(&mut writer, channels, programmes, zone, base_url)?;
     writer.finish()
 }
