@@ -22,7 +22,7 @@ pub struct DhcpLease {
     pub subnet_mask: Ipv4Addr,
     /// Lease duration in seconds.
     pub lease_seconds: u32,
-    /// Vendor-specific DHCP option 43 bytes.
+    /// Vendor-specific-information DHCP option 125 bytes.
     pub vendor_specific: Vec<u8>,
     expires_at: Instant,
 }

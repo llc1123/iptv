@@ -337,7 +337,7 @@ pub fn decode_reply(
     let address = Ipv4Addr::from(read_array::<4>(dhcp, 16)?);
     let server = option_ipv4_optional(&options, 54)?;
     let lease_seconds = option_u32_optional(&options, 51)?;
-    let vendor_specific = option_bytes_optional(&options, 43).map(ToOwned::to_owned);
+    let vendor_specific = option_bytes_optional(&options, 125).map(ToOwned::to_owned);
     let subnet_mask = option_ipv4_optional(&options, 1)?;
     let router = option_ipv4_optional(&options, 3)?;
     if expected_kind == ReplyKind::Ack {
@@ -348,7 +348,7 @@ pub fn decode_reply(
             return Err(PacketError::MissingAckOption(51));
         }
         if vendor_specific.is_none() {
-            return Err(PacketError::MissingAckOption(43));
+            return Err(PacketError::MissingAckOption(125));
         }
         if subnet_mask.is_none() {
             return Err(PacketError::MissingAckOption(1));
@@ -648,7 +648,7 @@ mod tests {
             &[
                 (53, &[5]),
                 (51, &lease),
-                (43, &[0x10]),
+                (125, &[0x10]),
                 (1, &mask),
                 (3, &router),
                 (54, &server),
@@ -708,7 +708,7 @@ mod tests {
         );
         assert_eq!(
             decode_reply(&missing, 7, MAC, ReplyKind::Ack),
-            Err(PacketError::MissingAckOption(43))
+            Err(PacketError::MissingAckOption(125))
         );
         assert_eq!(
             decode_reply(&valid[..valid.len() - 1], 7, MAC, ReplyKind::Ack),

@@ -448,7 +448,7 @@ fn report_packet_stage(error: &PacketError) {
         PacketError::MissingAckOption(code) => match code {
             1 => "dhcp-ack-subnet-mask-missing",
             3 => "dhcp-ack-router-missing",
-            43 => "dhcp-ack-vendor-missing",
+            125 => "dhcp-ack-vendor-missing",
             51 => "dhcp-ack-lease-time-missing",
             54 => "dhcp-ack-server-id-missing",
             _ => "dhcp-ack-option-missing",
