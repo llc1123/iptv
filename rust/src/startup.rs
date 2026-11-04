@@ -150,8 +150,12 @@ async fn prepare_engine(
     interface_mac: MacAddress,
     token: CancellationToken,
 ) -> Result<Prepared, AppError> {
-    let (stb_id, effective_mac) =
-        epg_identity(&config.stb_id, config.epg_mac.as_deref(), interface_mac);
+    let (stb_id, effective_mac) = epg_identity(
+        &config.stb_id,
+        &config.stb_id_prefix,
+        config.epg_mac.as_deref(),
+        interface_mac,
+    );
     let client = EpgClient::with_shutdown(
         EpgConfig {
             authentication_url: config.authentication_url.clone(),
@@ -307,11 +311,16 @@ fn dhcp_hostname(prefix: &str, mac: MacAddress) -> Vec<u8> {
 
 fn epg_identity(
     stb_id: &str,
+    stb_id_prefix: &str,
     epg_mac: Option<&str>,
     interface_mac: MacAddress,
 ) -> (String, String) {
     (
-        stb_id.to_owned(),
+        if stb_id.is_empty() {
+            format!("{stb_id_prefix}{}", interface_mac.compact_upper())
+        } else {
+            stb_id.to_owned()
+        },
         epg_mac.map_or_else(|| interface_mac.to_string().to_uppercase(), str::to_owned),
     )
 }
@@ -390,14 +399,17 @@ mod tests {
     }
 
     #[test]
-    fn epg_identity_uses_uppercase_interface_mac_only_as_default() {
+    fn epg_identity_derives_python_stb_id_and_uppercase_mac() {
         let mac = MacAddress::new([0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee]);
         assert_eq!(
-            epg_identity("", None, mac),
-            (String::new(), "02:AA:BB:CC:DD:EE".to_owned())
+            epg_identity("", "STB-", None, mac),
+            (
+                "STB-02AABBCCDDEE".to_owned(),
+                "02:AA:BB:CC:DD:EE".to_owned()
+            )
         );
         assert_eq!(
-            epg_identity("configured", Some("configured-mac"), mac),
+            epg_identity("configured", "STB-", Some("configured-mac"), mac),
             ("configured".to_owned(), "configured-mac".to_owned())
         );
     }
