@@ -650,6 +650,20 @@ mod tests {
         zero_udp_checksum[ip_end_for_test() + 6] = 0;
         zero_udp_checksum[ip_end_for_test() + 7] = 0;
         assert!(decode_reply(&zero_udp_checksum, 7, MAC, ReplyKind::Ack).is_ok());
+        let checksum_offset = ip_end_for_test() + 6;
+        let original_checksum = read_u16(&valid, checksum_offset).unwrap_or_default();
+        let invalid_checksum = match original_checksum {
+            0x1234 => 0x4321,
+            u16::MAX => 0x1234,
+            value => value.saturating_add(1),
+        };
+        let mut invalid_udp_checksum = valid.clone();
+        invalid_udp_checksum[checksum_offset..checksum_offset + 2]
+            .copy_from_slice(&invalid_checksum.to_be_bytes());
+        assert_eq!(
+            decode_reply(&invalid_udp_checksum, 7, MAC, ReplyKind::Ack),
+            Err(PacketError::MalformedFrame)
+        );
         assert_eq!(
             decode_reply(&valid, 8, MAC, ReplyKind::Ack),
             Err(PacketError::WrongTransaction)
