@@ -5,11 +5,11 @@ deployment. It authenticates against the EPG service, refreshes channel and
 programme metadata, serves M3U/XMLTV data, and proxies live HLS and
 time-shift/replay streams.
 
-The Python server is the current operational primary. A Rust rewrite lives in
-`rust/`, but its `main` is still a scaffold: it validates the configuration
-and exits without binding a port, touching a network interface, or contacting
-the provider. There is no deployable Rust server yet. Keep Python running and
-follow the [deployment and migration runbook](#deployment-and-migration-runbook)
+The Python server remains the current operational primary while the Rust
+startup path is validated on the dedicated IPTV interface. The Rust executable
+now owns the complete startup composition, but live provider/DHCP execution
+and supervised cutover are intentionally not claimed by the offline gates.
+Keep Python running and follow the [deployment and migration runbook](#deployment-and-migration-runbook)
 before any change of primary.
 
 The repository does not ship credentials, account identifiers, device
@@ -194,21 +194,21 @@ subscriber device.
   lease, the provider routes, and the EPG session, and it serves the players.
   It stays authoritative until every [cutover](#eventual-primary-cutover)
   check passes.
-- Rust isn't deployable. `rust/src/main.rs` parses and validates the
-  configuration, prints
-  `media server startup is not implemented in this scaffold`, and exits with
-  status 0. It never takes the instance lock, binds a port, sends DHCP,
-  changes the interface, or contacts the provider. Don't install it as a
-  service or point players at it.
-- The Rust building blocks exist as library code with offline tests:
-  configuration, capability preflight, raw DHCP and interface setup, the
-  startup gate, the EPG client, scheduled refresh with atomic snapshots and a
-  warm guide cache, M3U/XMLTV rendering, bounded HLS proxying, the route set,
-  and graceful drain. Nothing wires them into a running server, so no Rust
-  real-surface run exists yet.
+- Rust now has a real startup composition. It performs exact Python preflight,
+  takes the instance lock and held listener, checks capabilities before DHCP,
+  authenticates and refreshes metadata, serves the existing routes, and drains
+  on SIGINT/SIGTERM. Offline tests do not prove live provider/DHCP success, so
+  Python remains the operational primary until the supervised cutover checks
+  below pass.
+- The Rust production path composes configuration, capability preflight, raw
+  DHCP and interface setup, the startup gate, the EPG client, scheduled
+  refresh with atomic snapshots and a warm guide cache, M3U/XMLTV rendering,
+  bounded HLS proxying, the route set, and graceful drain. The real provider
+  surface remains an explicit, supervised validation step.
 - `scripts/verify.sh` builds `rust/target/release/iptv-media-server` as a
-  verification artifact. Its `--help` prints only a fixed word, so use the
-  [configuration mapping](#configuration-mapping) as the flag reference.
+  verification artifact. Its `--help` and `--version` are the authoritative
+  CLI reference; the [configuration mapping](#configuration-mapping) records
+  the Python-compatible environment and flag names.
 
 ### Single-primary rule and migration lock
 
@@ -227,7 +227,8 @@ Python has no guard of its own and will start next to another owner, so the
 operator enforces the rule on the Python side.
 
 On the Rust side, the startup gate in `rust/src/startup_gate.rs` is the
-migration lock. `main` doesn't call it yet. It runs three checks in this order
+migration lock. The production `main` calls it before any interface mutation.
+It runs three checks in this order
 and stops at the first refusal:
 
 1. Python preflight (`rust/src/python_scan.rs`). It reads every
@@ -411,13 +412,14 @@ heartbeat, keepalive, or `/log/epgplay` playback reports.
 ### Eventual-primary cutover
 
 Rust becomes the primary only after every check below passes, in order. Until
-then Python stays authoritative. Today the first check fails, so stop there.
+then Python stays authoritative. The offline implementation check now passes;
+the supervised provider/interface check remains unrun.
 
 1. Startup: `main` wires configuration, capability preflight, the startup
    gate, DHCP, interface setup, EPG login, the first refresh, serving, and
    shutdown; it refuses before any DHCP when a Python server is visible; and
-   `IPTV_ENABLE_REAL_E2E=1 bash scripts/test-real-e2e.sh` no longer refuses
-   because startup is not implemented.
+   `IPTV_ENABLE_REAL_E2E=1 bash scripts/test-real-e2e.sh` can launch the
+   executable when the operator supplies the isolated credential file.
 2. Offline gates: `bash scripts/verify.sh` passes in full, including both
    fixture checks, along with `bash scripts/test-mock.sh`,
    `bash scripts/test-real-e2e-selftest.sh`, and the netns gate.
@@ -637,12 +639,12 @@ so are empty, placeholder (including the sample values in this README), and
 unsafe-expansion values and a missing required key (every allowlisted key
 except `IPTV_EPG_MAC`).
 Values are never printed. Next the gate requires an executable
-`rust/target/release/iptv-media-server` and refuses while `rust/src/main.rs`
-still reports that startup is not implemented. That's the current result:
-every enabled run ends in `REFUSE` before it launches anything, sends DHCP, or
-contacts the provider.
+`rust/target/release/iptv-media-server`. With valid opt-in credentials it may
+then launch the Rust service against the configured provider, so use it only
+after stopping Python and recording the interface baseline. The repository
+does not run this live path by default.
 
-Once Rust startup exists, an enabled run launches the server through
+An enabled run launches the Rust server through
 `setsid env -i` with only the allowlisted variables, on the configured
 interface and bound to `127.0.0.1`, with output in an isolated mode-`700`
 temporary directory, under a fixed 300-second deadline. Cleanup sends TERM to
@@ -682,5 +684,5 @@ an interface, changing a route, or writing state. `--occupied-state` returns
 `REFUSE` and exit 2 to model an existing migration lock; it never attempts a
 cutover. The checked-in `systemd/iptv-media-server.service` declares
 `CAP_NET_RAW` and `CAP_NET_ADMIN`, a 10-second stop grace, and a 65,536-file
-limit. It is a future deployment template only: do not install or start it
-until the Rust startup gate is no longer a scaffold.
+limit. It remains a deployment template until a supervised real-surface run
+passes; installing it is not part of offline verification.
