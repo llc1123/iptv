@@ -1037,6 +1037,7 @@ fn extract_query_token(body: &str, name: &'static str) -> Result<String, EpgErro
         let Some(value) = suffix.strip_prefix('=') else {
             continue;
         };
+        let value = value.trim_start();
         let value = value
             .strip_prefix('"')
             .or_else(|| value.strip_prefix('\''))

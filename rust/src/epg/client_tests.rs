@@ -11,8 +11,17 @@ use tokio::sync::{Notify, Semaphore};
 use super::super::models::Programme;
 use super::super::request::send_with_client_retry;
 use super::super::session::{SessionBundle, Sleeper};
-use super::{EpgClient, EpgConfig, EpgError, EpgErrorClass, EpgErrorStage};
+use super::{EpgClient, EpgConfig, EpgError, EpgErrorClass, EpgErrorStage, extract_query_token};
 use crate::lifecycle::Lifecycle;
+
+#[test]
+fn query_token_accepts_whitespace_after_equals() {
+    assert_eq!(
+        extract_query_token("var EncryptToken = \"fixture-token\";", "EncryptToken")
+            .expect("token"),
+        "fixture-token"
+    );
+}
 
 #[tokio::test]
 async fn loopback_auth_sequence_is_single_flight_and_cookie_bound() {
