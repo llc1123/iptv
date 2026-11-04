@@ -89,6 +89,17 @@ cleanup() {
         return 1
     fi
 }
+report_failure_stage() {
+    local line
+    [[ -f "$RUN_DIR/server.err" ]] || return 0
+    while IFS= read -r line; do
+        case "$line" in
+            startup_stage=preflight|startup_stage=guide-window|startup_stage=dhcp|startup_stage=epg-client|startup_stage=epg-bootstrap|startup_stage=epg-or-refresh|startup_stage=warm-cache|startup_stage=hls-policy|startup_stage=first-snapshot|startup_stage=serve)
+                printf 'STARTUP_STAGE: %s\n' "${line#startup_stage=}" >&2
+                ;;
+        esac
+    done < "$RUN_DIR/server.err"
+}
 trap cleanup EXIT
 
 [[ -x "$SERVER" ]] || refuse 'Rust server executable is unavailable; startup is not implemented'
@@ -119,9 +130,11 @@ status=$?
 set -e
 
 if (( status == 124 )); then
+    report_failure_stage
     printf 'TIMEOUT: real E2E server deadline exceeded\n' >&2
     exit 124
 elif (( status != 0 )); then
+    report_failure_stage
     printf 'FAIL: real E2E server exited unsuccessfully\n' >&2
     exit 1
 fi

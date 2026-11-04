@@ -47,7 +47,10 @@ pub async fn run(config: Config) -> Result<(), AppError> {
         config.guide_past_days,
         config.guide_future_days,
     )
-    .map_err(|_| startup_error())?;
+    .map_err(|_| {
+        report_startup_stage("guide-window");
+        startup_error()
+    })?;
     let cancellation = CancellationSource::new();
     let signal_task = tokio::spawn(signal_watcher(cancellation.clone()));
     let state_dir = state_dir(&config);
@@ -55,6 +58,7 @@ pub async fn run(config: Config) -> Result<(), AppError> {
     let gate = match acquire_startup_gate(&config, &state_dir, &preflight) {
         Ok(gate) => gate,
         Err(refusal) => {
+            report_startup_stage("preflight");
             cancellation.cancel();
             let _ = signal_task.await;
             return Err(map_refusal(refusal));
@@ -87,9 +91,21 @@ async fn compose_after_gate(
     cancellation: CancellationSource,
 ) -> Result<(), AppError> {
     let token = cancellation.token();
-    let (lease, interface_mac) = acquire_dhcp(config, token.clone()).await?;
+    let (lease, interface_mac) = match acquire_dhcp(config, token.clone()).await {
+        Ok(value) => value,
+        Err(error) => {
+            report_startup_stage("dhcp");
+            return Err(error);
+        }
+    };
     let prepared =
-        prepare_engine(config, zone, windows, lease, interface_mac, token.clone()).await?;
+        match prepare_engine(config, zone, windows, lease, interface_mac, token.clone()).await {
+            Ok(value) => value,
+            Err(error) => {
+                report_startup_stage("epg-or-refresh");
+                return Err(error);
+            }
+        };
     let tokens = Arc::new(TokenStore::default());
     let policy = Arc::new(
         HlsPolicy::new(
@@ -97,7 +113,10 @@ async fn compose_after_gate(
             config.upstream_allow_cidrs.clone(),
             Arc::new(SystemResolver),
         )
-        .map_err(|_| startup_error())?,
+        .map_err(|_| {
+            report_startup_stage("hls-policy");
+            startup_error()
+        })?,
     );
     let hls = Arc::new(PolicyForwarder::new(policy, tokens.clone()));
     let playback = Arc::new(EpgPlaybackResolver::with_runtime(
@@ -123,6 +142,7 @@ async fn compose_after_gate(
     let router = build_router(state);
     let supervisor = RefreshSupervisor::start_with_cancellation(prepared.engine, cancellation);
     if !prepared.store.wait_for_snapshot(&token).await {
+        report_startup_stage("first-snapshot");
         let _ = supervisor.stop(REFRESH_STOP_TIMEOUT).await;
         return Err(startup_error());
     }
@@ -137,7 +157,10 @@ async fn compose_after_gate(
         async move { token.cancelled().await },
     )
     .await
-    .map_err(|_| startup_error());
+    .map_err(|_| {
+        report_startup_stage("serve");
+        startup_error()
+    });
     let _ = supervisor.stop(REFRESH_STOP_TIMEOUT).await;
     result
 }
@@ -170,12 +193,15 @@ async fn prepare_engine(
         },
         token.clone(),
     )
-    .map_err(|_| startup_error())?;
+    .map_err(|_| {
+        report_startup_stage("epg-client");
+        startup_error()
+    })?;
     let source = Arc::new(EpgMetadataSource::new(client.clone()));
-    let channels = source
-        .bootstrap(token.clone())
-        .await
-        .map_err(|_| startup_error())?;
+    let channels = source.bootstrap(token.clone()).await.map_err(|_| {
+        report_startup_stage("epg-bootstrap");
+        startup_error()
+    })?;
     let fingerprint =
         CacheFingerprint::from_config(config, Some(&effective_mac)).map_err(|_| startup_error())?;
     let cache = GuideCache::new(config.guide_cache.clone());
@@ -210,7 +236,10 @@ async fn prepare_engine(
             programmes,
             zone,
         )
-        .await?;
+        .await
+        .inspect_err(|_| {
+            report_startup_stage("warm-cache");
+        })?;
     }
     Ok(Prepared {
         client,
@@ -360,6 +389,10 @@ fn state_dir(config: &Config) -> PathBuf {
 
 fn startup_error() -> AppError {
     AppError::Startup(StartupError::Startup)
+}
+
+fn report_startup_stage(stage: &'static str) {
+    eprintln!("startup_stage={stage}");
 }
 
 fn map_refusal(_refusal: StartupRefusal) -> AppError {
