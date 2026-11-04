@@ -14,7 +14,7 @@ use crate::dhcp::linux::{
 };
 use crate::dhcp::packet::{MacAddress, PacketError};
 use crate::dhcp::{DhcpError, LifecycleResult};
-use crate::epg::{EpgClient, EpgConfig};
+use crate::epg::{EpgClient, EpgConfig, EpgErrorStage};
 use crate::error::{AppError, StartupError};
 use crate::guide::{
     CacheFingerprint, GuideCache, GuideZone, SystemGuideClock, build_windows_from_clock,
@@ -203,8 +203,8 @@ async fn prepare_engine(
         startup_error()
     })?;
     let source = Arc::new(EpgMetadataSource::new(client.clone()));
-    let session = source.authenticate(token.clone()).await.map_err(|_| {
-        report_startup_stage("epg-auth");
+    let session = source.authenticate(token.clone()).await.map_err(|error| {
+        report_epg_auth_stage(error);
         startup_error()
     })?;
     let channels = source.channels(session, token.clone()).await.map_err(|_| {
@@ -420,6 +420,18 @@ fn startup_error() -> AppError {
 
 fn report_startup_stage(stage: &'static str) {
     eprintln!("startup_stage={stage}");
+}
+
+fn report_epg_auth_stage(error: crate::refresh::MetadataError) {
+    let stage = match error {
+        crate::refresh::MetadataError::Authentication(EpgErrorStage::Discovery) => "epg-discovery",
+        crate::refresh::MetadataError::Authentication(EpgErrorStage::Login) => "epg-login",
+        crate::refresh::MetadataError::Authentication(EpgErrorStage::Authentication) => {
+            "epg-authentication"
+        }
+        _ => "epg-auth",
+    };
+    report_startup_stage(stage);
 }
 
 fn report_dhcp_stage(error: &DhcpError) {

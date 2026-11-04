@@ -33,7 +33,7 @@ pub enum MetadataError {
     /// The current session expired and one reauthentication/replay is allowed.
     SessionExpired,
     /// Authentication itself failed and the cycle must stop.
-    Authentication,
+    Authentication(crate::epg::EpgErrorStage),
     /// A non-authentication provider or parser failure.
     Business,
     /// The caller cancelled the operation.
@@ -66,7 +66,13 @@ impl From<EpgError> for MetadataError {
             (EpgErrorStage::Request, EpgErrorClass::HttpStatus, Some(401 | 403)) => {
                 Self::SessionExpired
             }
-            (EpgErrorStage::Authentication, _, _) => Self::Authentication,
+            (
+                stage @ (EpgErrorStage::Discovery
+                | EpgErrorStage::Login
+                | EpgErrorStage::Authentication),
+                _,
+                _,
+            ) => Self::Authentication(stage),
             (_, EpgErrorClass::Cancelled, _) => Self::Cancelled,
             _ => Self::Business,
         }
@@ -181,7 +187,9 @@ impl MetadataSource for EpgMetadataSource {
                 .clone();
             let Some(current) = current.filter(|value| value.generation() == session.generation())
             else {
-                return Err(MetadataError::Authentication);
+                return Err(MetadataError::Authentication(
+                    crate::epg::EpgErrorStage::Authentication,
+                ));
             };
             tokio::select! {
                 result = self.client.fetch_channels(&current) => result.map_err(MetadataError::from),
@@ -205,7 +213,9 @@ impl MetadataSource for EpgMetadataSource {
                 .clone();
             let Some(current) = current.filter(|value| value.generation() == session.generation())
             else {
-                return Err(MetadataError::Authentication);
+                return Err(MetadataError::Authentication(
+                    crate::epg::EpgErrorStage::Authentication,
+                ));
             };
             tokio::select! {
                 result = self.client.fetch_programmes(&current, &channel.channel_id, &channel.code, window.start_ms, window.end_ms.saturating_sub(1)) => result.map_err(MetadataError::from),
