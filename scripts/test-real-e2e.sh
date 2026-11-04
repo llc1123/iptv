@@ -27,7 +27,7 @@ refuse() {
 }
 
 [[ "$(uname -s)" == Linux ]] || refuse 'real E2E requires Linux'
-for tool in grep mktemp setsid stat timeout; do
+for tool in curl grep mktemp setsid stat timeout; do
     command -v "$tool" >/dev/null 2>&1 || refuse "required tool unavailable: $tool"
 done
 
@@ -125,8 +125,27 @@ setsid env -i "${ENV_ARGS[@]}" timeout --signal=TERM --kill-after=10s 300s "$SER
     --interface "${CONFIG[IPTV_INTERFACE]}" --host 127.0.0.1 --port 8080 \
     >"$RUN_DIR/server.out" 2>"$RUN_DIR/server.err" &
 SERVER_PID=$!
-wait "$SERVER_PID"
-status=$?
+ready=0
+status=124
+for _ in $(seq 1 300); do
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        wait "$SERVER_PID"
+        status=$?
+        break
+    fi
+    if curl -fsS --max-time 2 http://127.0.0.1:8080/healthz >"$RUN_DIR/health.json" 2>/dev/null \
+        && grep -Fq '"status":"ok"' "$RUN_DIR/health.json" \
+        && grep -Fq '"ready":true' "$RUN_DIR/health.json"; then
+        ready=1
+        status=0
+        break
+    fi
+    sleep 1
+done
+if (( ready == 1 )); then
+    curl -fsS --max-time 30 http://127.0.0.1:8080/channels.m3u >/dev/null || status=1
+    curl -fsS --max-time 30 http://127.0.0.1:8080/xmltv.xml >/dev/null || status=1
+fi
 set -e
 
 if (( status == 124 )); then
