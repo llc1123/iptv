@@ -429,15 +429,23 @@ fn report_epg_auth_stage(error: crate::refresh::MetadataError) {
         }
         crate::refresh::MetadataError::Authentication(
             EpgErrorStage::Login,
-            EpgErrorClass::MissingField | EpgErrorClass::Parse,
-        ) => "epg-login-parse",
+            EpgErrorClass::MissingField,
+        ) => "epg-login-field",
+        crate::refresh::MetadataError::Authentication(
+            EpgErrorStage::Login,
+            EpgErrorClass::Parse,
+        ) => "epg-login-body",
         crate::refresh::MetadataError::Authentication(EpgErrorStage::Login, _) => {
             "epg-login-request"
         }
         crate::refresh::MetadataError::Authentication(
             EpgErrorStage::Authentication,
-            EpgErrorClass::MissingField | EpgErrorClass::Parse,
-        ) => "epg-authentication-parse",
+            EpgErrorClass::MissingField,
+        ) => "epg-authentication-field",
+        crate::refresh::MetadataError::Authentication(
+            EpgErrorStage::Authentication,
+            EpgErrorClass::Parse,
+        ) => "epg-authentication-body",
         crate::refresh::MetadataError::Authentication(EpgErrorStage::Authentication, _) => {
             "epg-authentication-request"
         }
