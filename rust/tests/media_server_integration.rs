@@ -6,6 +6,7 @@
 
 mod support;
 
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -33,6 +34,27 @@ use serde::Deserialize;
 use tower::ServiceExt;
 
 use support::mock_provider::MockProvider;
+
+#[test]
+fn cli_help_and_version_are_real_clap_output() {
+    let help = Command::new(env!("CARGO_BIN_EXE_iptv-media-server"))
+        .arg("--help")
+        .output()
+        .expect("run help");
+    assert!(help.status.success());
+    assert!(help.stderr.is_empty());
+    let help_text = String::from_utf8(help.stdout).expect("help is utf8");
+    assert!(help_text.contains("Usage: iptv-media-server [OPTIONS]"));
+    assert!(!help_text.contains("startup is not implemented"));
+
+    let version = Command::new(env!("CARGO_BIN_EXE_iptv-media-server"))
+        .arg("--version")
+        .output()
+        .expect("run version");
+    assert!(version.status.success());
+    assert!(version.stderr.is_empty());
+    assert_eq!(version.stdout, b"iptv-media-server 0.1.0\n");
+}
 
 struct FixedEpoch;
 impl EpochClock for FixedEpoch {
