@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+if [[ -z "${IPTV_ENABLE_REAL_E2E+x}" ]]; then
+    printf 'SKIP: set IPTV_ENABLE_REAL_E2E=1 to run the real E2E gate\n'
+    exit 0
+fi
+case "$IPTV_ENABLE_REAL_E2E" in
+    "")
+        printf 'REFUSE: IPTV_ENABLE_REAL_E2E must equal exactly 1\n' >&2
+        exit 2
+        ;;
+    1) ;;
+    *)
+        printf 'REFUSE: IPTV_ENABLE_REAL_E2E must equal exactly 1\n' >&2
+        exit 2
+        ;;
+esac
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+ENV_FILE=$ROOT/var/iptv-e2e.env
+SERVER=$ROOT/rust/target/release/iptv-media-server
+
+refuse() {
+    printf 'REFUSE: %s\n' "$1" >&2
+    exit 2
+}
+
+[[ "$(uname -s)" == Linux ]] || refuse 'real E2E requires Linux'
+for tool in curl grep mktemp setsid stat timeout; do
+    command -v "$tool" >/dev/null 2>&1 || refuse "required tool unavailable: $tool"
+done
+
+[[ -f "$ENV_FILE" && ! -L "$ENV_FILE" ]] || refuse 'var/iptv-e2e.env must be a regular non-symlink file'
+ENV_MODE=$(stat -c '%a' "$ENV_FILE")
+ENV_OWNER_READ=$(stat -c '%A' "$ENV_FILE")
+[[ "$ENV_OWNER_READ" == -r* ]] || refuse 'var/iptv-e2e.env must be owner-readable'
+(( 10#$ENV_MODE % 100 == 0 )) || refuse 'var/iptv-e2e.env must not be group- or world-readable'
+
+for credential in IPTV_DHCP_USER IPTV_DHCP_PASSWORD IPTV_USER_ID IPTV_PASSWORD IPTV_EPG_MAC IPTV_STB_ID_PREFIX IPTV_AUTH_URL; do
+    [[ -z "${!credential+x}" ]] || refuse 'credentials must come only from var/iptv-e2e.env'
+done
+
+declare -A CONFIG=()
+while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    [[ "$line" =~ ^([A-Z][A-Z0-9_]*)=\'([^\']*)\'$ ]] || refuse 'env file contains a malformed assignment'
+    key=${BASH_REMATCH[1]}
+    value=${BASH_REMATCH[2]}
+    case "$key" in
+        IPTV_INTERFACE|IPTV_DHCP_USER|IPTV_DHCP_PASSWORD|IPTV_USER_ID|IPTV_PASSWORD|IPTV_EPG_MAC|IPTV_STB_ID_PREFIX|IPTV_AUTH_URL) ;;
+        *) refuse 'env file contains an unknown assignment' ;;
+    esac
+    [[ -z "${CONFIG[$key]+x}" ]] || refuse 'env file contains a duplicate assignment'
+    [[ -n "$value" ]] || refuse 'env file contains an empty value'
+    [[ "$value" != *'$'* && "$value" != *'`'* && "$value" != *'\\'* ]] || refuse 'env file contains unsafe expansion syntax'
+    case "$value" in
+        http://your-eds-host:port/*|https://your-eds-host:port/*)
+            refuse 'env file contains a placeholder value'
+            ;;
+        your-*|YOUR-*|changeme|CHANGEME|example|EXAMPLE|placeholder|PLACEHOLDER|test|TEST)
+            refuse 'env file contains a placeholder value'
+            ;;
+    esac
+    CONFIG["$key"]=$value
+done < "$ENV_FILE"
+
+for required in IPTV_INTERFACE IPTV_DHCP_USER IPTV_DHCP_PASSWORD IPTV_USER_ID IPTV_PASSWORD IPTV_STB_ID_PREFIX IPTV_AUTH_URL; do
+    [[ -n "${CONFIG[$required]+x}" ]] || refuse 'env file is missing a required assignment'
+done
+
+RUN_DIR=''
+SERVER_PID=''
+cleanup_status=0
+cleanup() {
+    local wait_status
+    if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
+        kill -TERM -- "-$SERVER_PID" 2>/dev/null || cleanup_status=1
+        if ! timeout --signal=KILL 10s tail --pid="$SERVER_PID" -f /dev/null >/dev/null 2>&1; then
+            kill -KILL -- "-$SERVER_PID" 2>/dev/null || cleanup_status=1
+            wait "$SERVER_PID" 2>/dev/null || true
+        fi
+    fi
+    if [[ -n "$RUN_DIR" ]]; then
+        rm -rf -- "$RUN_DIR" || cleanup_status=1
+    fi
+    if (( cleanup_status != 0 )); then
+        printf 'CLEANUP_FAILURE: unable to clean up real E2E process state\n' >&2
+        return 1
+    fi
+}
+report_failure_stage() {
+    local line
+    [[ -f "$RUN_DIR/server.err" ]] || return 0
+    while IFS= read -r line; do
+        case "$line" in
+            startup_stage=preflight|startup_stage=guide-window|startup_stage=dhcp|startup_stage=dhcp-platform|startup_stage=dhcp-preflight|startup_stage=dhcp-interface|startup_stage=dhcp-option60|startup_stage=dhcp-frame|startup_stage=dhcp-mac|startup_stage=dhcp-cookie|startup_stage=dhcp-options|startup_stage=dhcp-message|startup_stage=dhcp-ports|startup_stage=dhcp-transaction|startup_stage=dhcp-bootp|startup_stage=dhcp-message-type|startup_stage=dhcp-message-type-missing|startup_stage=dhcp-nak|startup_stage=dhcp-missing-option|startup_stage=dhcp-ack-option-missing|startup_stage=dhcp-ack-subnet-mask-missing|startup_stage=dhcp-ack-router-missing|startup_stage=dhcp-ack-vendor-missing|startup_stage=dhcp-ack-lease-time-missing|startup_stage=dhcp-ack-server-id-missing|startup_stage=dhcp-subnet-mask|startup_stage=dhcp-router|startup_stage=dhcp-lease-time|startup_stage=dhcp-server-id|startup_stage=dhcp-option-length|startup_stage=dhcp-size|startup_stage=dhcp-lease|startup_stage=dhcp-timeout|startup_stage=dhcp-socket|startup_stage=dhcp-interface-setup|startup_stage=epg-client|startup_stage=epg-auth|startup_stage=epg-discovery|startup_stage=epg-login|startup_stage=epg-login-field|startup_stage=epg-login-body|startup_stage=epg-login-request|startup_stage=epg-authentication|startup_stage=epg-authentication-field|startup_stage=epg-authentication-body|startup_stage=epg-authentication-request|startup_stage=epg-bootstrap|startup_stage=cache|startup_stage=warm-cache|startup_stage=hls-policy|startup_stage=refresh-window-parse|startup_stage=refresh-window-status|startup_stage=refresh-window-request|startup_stage=refresh-window-auth|startup_stage=refresh-window-cancelled|startup_stage=refresh-window-other|startup_stage=refresh-programme-limit|startup_stage=refresh-programme-conflict|startup_stage=refresh-programme-interval|startup_stage=refresh-window-interval|startup_stage=refresh-prior-interval|startup_stage=refresh-snapshot|startup_stage=refresh-cache|startup_stage=refresh-publish|startup_stage=first-snapshot|startup_stage=serve)
+                printf 'STARTUP_STAGE: %s\n' "${line#startup_stage=}" >&2
+                ;;
+        esac
+    done < "$RUN_DIR/server.err"
+}
+trap cleanup EXIT
+
+[[ -x "$SERVER" ]] || refuse 'Rust server executable is unavailable; startup is not implemented'
+[[ -f "$ROOT/rust/src/main.rs" ]] || refuse 'Rust startup source is unavailable'
+grep -Fq 'startup is not implemented' "$ROOT/rust/src/main.rs" &&
+    refuse 'Rust server startup is not implemented'
+
+RUN_DIR=$(mktemp -d)
+chmod 700 "$RUN_DIR"
+umask 077
+{
+    printf 'IPTV_INTERFACE=%q\n' "${CONFIG[IPTV_INTERFACE]}"
+    printf 'IPTV_DHCP_USER=%q\n' "${CONFIG[IPTV_DHCP_USER]}"
+    printf 'IPTV_DHCP_PASSWORD=%q\n' "${CONFIG[IPTV_DHCP_PASSWORD]}"
+    printf 'IPTV_USER_ID=%q\n' "${CONFIG[IPTV_USER_ID]}"
+    printf 'IPTV_PASSWORD=%q\n' "${CONFIG[IPTV_PASSWORD]}"
+    printf 'IPTV_STB_ID_PREFIX=%q\n' "${CONFIG[IPTV_STB_ID_PREFIX]}"
+    printf 'IPTV_AUTH_URL=%q\n' "${CONFIG[IPTV_AUTH_URL]}"
+    [[ -n "${CONFIG[IPTV_EPG_MAC]+x}" ]] && printf 'IPTV_EPG_MAC=%q\n' "${CONFIG[IPTV_EPG_MAC]}"
+} >"$RUN_DIR/server.env"
+
+set +e
+cd "$ROOT"
+setsid env -i bash -c '
+    set -a
+    . "$1"
+    set +a
+    exec timeout --signal=TERM --kill-after=10s 300s ./rust/target/release/iptv-media-server \
+        --interface "$IPTV_INTERFACE" --host 127.0.0.1 --port 8080
+' _ "$RUN_DIR/server.env" \
+    >"$RUN_DIR/server.out" 2>"$RUN_DIR/server.err" &
+SERVER_PID=$!
+ready=0
+status=124
+for _ in $(seq 1 300); do
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        wait "$SERVER_PID"
+        status=$?
+        (( status == 0 )) && status=1
+        break
+    fi
+    if curl -fsS --max-time 2 http://127.0.0.1:8080/healthz >"$RUN_DIR/health.json" 2>/dev/null \
+        && grep -Fq '"status":"ok"' "$RUN_DIR/health.json" \
+        && grep -Fq '"ready":true' "$RUN_DIR/health.json"; then
+        ready=1
+        status=0
+        break
+    fi
+    sleep 1
+done
+if (( ready == 1 )); then
+    curl -fsS --max-time 30 http://127.0.0.1:8080/channels.m3u >/dev/null || status=1
+    curl -fsS --max-time 30 http://127.0.0.1:8080/xmltv.xml >/dev/null || status=1
+fi
+set -e
+
+if (( status == 124 )); then
+    report_failure_stage
+    printf 'TIMEOUT: real E2E server deadline exceeded\n' >&2
+    exit 124
+elif (( status != 0 )); then
+    report_failure_stage
+    printf 'FAIL: real E2E server exited unsuccessfully\n' >&2
+    exit 1
+fi
+printf 'PASS: real E2E gate completed\n'
