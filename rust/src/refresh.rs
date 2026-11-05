@@ -791,16 +791,28 @@ impl WindowOutcome {
 }
 
 fn merge_windows(previous: &[Programme], outcomes: &[WindowOutcome]) -> Vec<Programme> {
-    let mut merged = previous.to_vec();
+    let mut merged = previous
+        .iter()
+        .filter(|programme| programme.start_time_ms < programme.end_time_ms)
+        .cloned()
+        .collect::<Vec<_>>();
     for outcome in outcomes {
         let Some(programmes) = &outcome.programmes else {
             continue;
         };
+        let valid_programmes = programmes
+            .iter()
+            .filter(|programme| programme.start_time_ms < programme.end_time_ms)
+            .cloned()
+            .collect::<Vec<_>>();
+        if valid_programmes.is_empty() {
+            continue;
+        }
         merged.retain(|programme| {
             programme.channel_id != outcome.channel_id
                 || !overlaps_window(programme, outcome.window)
         });
-        merged.extend(programmes.iter().cloned());
+        merged.extend(valid_programmes);
     }
     merged.sort_by_key(|programme| {
         (
@@ -810,7 +822,6 @@ fn merge_windows(previous: &[Programme], outcomes: &[WindowOutcome]) -> Vec<Prog
             programme.programme_id.clone(),
         )
     });
-    merged.retain(|programme| programme.start_time_ms < programme.end_time_ms);
     merged
 }
 

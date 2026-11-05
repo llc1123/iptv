@@ -630,8 +630,9 @@ any of `IPTV_DHCP_USER`, `IPTV_DHCP_PASSWORD`, `IPTV_USER_ID`,
 `IPTV_PASSWORD`, `IPTV_EPG_MAC`, `IPTV_STB_ID_PREFIX`, or `IPTV_AUTH_URL` is
 already set, because credentials may come only from `var/iptv-e2e.env`.
 
-When enabled, the gate requires Linux; `grep`, `mktemp`, `setsid`, `stat`, and
-`timeout`; and a regular, non-symlink, owner-readable `var/iptv-e2e.env` with
+When enabled, the gate requires Linux; `curl`, `grep`, `mktemp`, `setsid`,
+`stat`, and `timeout`; and a regular, non-symlink, owner-readable
+`var/iptv-e2e.env` with
 no group or world permission bits (mode `600`). The file is parsed as quoted
 data, never sourced. Every non-blank line must be `KEY='value'` with an
 allowlisted key. Duplicate, unknown, or malformed assignments are refused, and

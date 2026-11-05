@@ -109,20 +109,27 @@ grep -Fq 'startup is not implemented' "$ROOT/rust/src/main.rs" &&
 
 RUN_DIR=$(mktemp -d)
 chmod 700 "$RUN_DIR"
+umask 077
+{
+    printf 'IPTV_INTERFACE=%q\n' "${CONFIG[IPTV_INTERFACE]}"
+    printf 'IPTV_DHCP_USER=%q\n' "${CONFIG[IPTV_DHCP_USER]}"
+    printf 'IPTV_DHCP_PASSWORD=%q\n' "${CONFIG[IPTV_DHCP_PASSWORD]}"
+    printf 'IPTV_USER_ID=%q\n' "${CONFIG[IPTV_USER_ID]}"
+    printf 'IPTV_PASSWORD=%q\n' "${CONFIG[IPTV_PASSWORD]}"
+    printf 'IPTV_STB_ID_PREFIX=%q\n' "${CONFIG[IPTV_STB_ID_PREFIX]}"
+    printf 'IPTV_AUTH_URL=%q\n' "${CONFIG[IPTV_AUTH_URL]}"
+    [[ -n "${CONFIG[IPTV_EPG_MAC]+x}" ]] && printf 'IPTV_EPG_MAC=%q\n' "${CONFIG[IPTV_EPG_MAC]}"
+} >"$RUN_DIR/server.env"
 
 set +e
-ENV_ARGS=(
-    "IPTV_INTERFACE=${CONFIG[IPTV_INTERFACE]}"
-    "IPTV_DHCP_USER=${CONFIG[IPTV_DHCP_USER]}"
-    "IPTV_DHCP_PASSWORD=${CONFIG[IPTV_DHCP_PASSWORD]}"
-    "IPTV_USER_ID=${CONFIG[IPTV_USER_ID]}"
-    "IPTV_PASSWORD=${CONFIG[IPTV_PASSWORD]}"
-    "IPTV_STB_ID_PREFIX=${CONFIG[IPTV_STB_ID_PREFIX]}"
-    "IPTV_AUTH_URL=${CONFIG[IPTV_AUTH_URL]}"
-)
-[[ -n "${CONFIG[IPTV_EPG_MAC]+x}" ]] && ENV_ARGS+=("IPTV_EPG_MAC=${CONFIG[IPTV_EPG_MAC]}")
-setsid env -i "${ENV_ARGS[@]}" timeout --signal=TERM --kill-after=10s 300s "$SERVER" \
-    --interface "${CONFIG[IPTV_INTERFACE]}" --host 127.0.0.1 --port 8080 \
+cd "$ROOT"
+setsid env -i bash -c '
+    set -a
+    . "$1"
+    set +a
+    exec timeout --signal=TERM --kill-after=10s 300s ./rust/target/release/iptv-media-server \
+        --interface "$IPTV_INTERFACE" --host 127.0.0.1 --port 8080
+' _ "$RUN_DIR/server.env" \
     >"$RUN_DIR/server.out" 2>"$RUN_DIR/server.err" &
 SERVER_PID=$!
 ready=0
@@ -131,6 +138,7 @@ for _ in $(seq 1 300); do
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
         wait "$SERVER_PID"
         status=$?
+        (( status == 0 )) && status=1
         break
     fi
     if curl -fsS --max-time 2 http://127.0.0.1:8080/healthz >"$RUN_DIR/health.json" 2>/dev/null \
