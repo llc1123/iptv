@@ -19,10 +19,9 @@ impl ProgrammeIndex {
                 .or_default()
                 .push(index);
             if !programme.programme_id.is_empty() {
-                by_id.insert(
-                    (programme.channel_id.clone(), programme.programme_id.clone()),
-                    index,
-                );
+                by_id
+                    .entry((programme.channel_id.clone(), programme.programme_id.clone()))
+                    .or_insert(index);
             }
         }
         Self {
@@ -48,5 +47,32 @@ impl ProgrammeIndex {
                     .then_some(programme)
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProgrammeIndex;
+    use crate::epg::Programme;
+
+    fn programme(title: &str) -> Programme {
+        Programme {
+            title: title.to_owned(),
+            start_time_ms: 1,
+            end_time_ms: 2,
+            programme_id: "duplicate".to_owned(),
+            channel_id: "channel".to_owned(),
+        }
+    }
+
+    #[test]
+    fn duplicate_programme_ids_keep_the_first_item() {
+        let index = ProgrammeIndex::new(vec![programme("first"), programme("second")]);
+        assert_eq!(
+            index
+                .by_id("channel", "duplicate")
+                .map(|item| item.title.as_str()),
+            Some("first")
+        );
     }
 }
