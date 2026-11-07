@@ -1,17 +1,16 @@
-#![expect(
-    unsafe_code,
-    reason = "Linux AF_PACKET and interface syscalls are isolated here"
-)]
+//! The Linux side of the DHCP client: layer-2 frames through `pnet_datalink`
+//! (an `AF_PACKET` socket) and interface setup through rtnetlink, so no
+//! external `ip` binary is needed (distroless images, `OpenWrt`).
 use super::{
-    DhcpError, lease,
+    DhcpError, DhcpLease, lease,
     packet::{self, MacAddress, ReplyKind},
 };
 use crate::crypto::ctc_option60::{self, Option60Input};
+use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
+use pnet_datalink::{Channel, DataLinkReceiver, DataLinkSender, NetworkInterface};
 use std::{
-    ffi::CString,
-    fmt, fs,
-    io::{self, Read},
-    process::{Command, Stdio},
+    fmt, fs, io,
+    net::Ipv4Addr,
     sync::OnceLock,
     time::{Duration, Instant},
 };
@@ -19,8 +18,13 @@ use thiserror::Error;
 
 /// How long each DISCOVER and REQUEST waits for its reply.
 const STAGE_TIMEOUT: Duration = Duration::from_secs(10);
-const AF_PACKET: u16 = 17;
-const ETH_P_IP: u16 = 0x0800;
+/// How often a quiet receive wakes up to check the deadline.
+const RECEIVE_POLL: Duration = Duration::from_secs(1);
+/// Routes to the provider's networks when none are configured, as in Python.
+const DEFAULT_ROUTES: [(Ipv4Addr, u8); 2] = [
+    (Ipv4Addr::new(10, 223, 0, 0), 16),
+    (Ipv4Addr::new(20, 248, 0, 0), 13),
+];
 static OPTION60_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
 #[derive(Clone)]
@@ -50,32 +54,40 @@ pub enum LinuxError {
     Io(String),
     #[error("DHCP server rejected the request (NAK)")]
     Nak,
-    #[error("`ip` command failed: {0}")]
-    Command(String),
+    /// The failing interface change and the kernel's error.
+    #[error("interface setup failed: {0}")]
+    Netlink(String),
     #[error("DHCP route override is invalid")]
     InvalidRoute,
-}
-
-fn os_error(operation: &str) -> LinuxError {
-    LinuxError::Io(format!("{operation}: {}", io::Error::last_os_error()))
 }
 
 /// Runs the DISCOVER/OFFER/REQUEST/ACK exchange on `interface`.
 pub fn acquire_lease(
     interface: &str,
     config: &ClientConfig<'_>,
-) -> Result<(super::DhcpLease, MacAddress), DhcpError> {
+) -> Result<(DhcpLease, MacAddress), DhcpError> {
     check_capabilities()?;
-    let mac: MacAddress = fs::read_to_string(format!("/sys/class/net/{interface}/address"))
-        .map_err(|error| LinuxError::Io(format!("read {interface} MAC: {error}")))?
-        .trim()
-        .parse()
-        .map_err(|_| LinuxError::Io(format!("parse {interface} MAC")))?;
-    let index = interface_index(interface)?;
+    let interface = find_interface(interface)?;
+    let mac = interface
+        .mac
+        .map(|mac| MacAddress::new(mac.octets()))
+        .ok_or_else(|| LinuxError::Io(format!("{} has no MAC address", interface.name)))?;
+    let config_datalink = pnet_datalink::Config {
+        read_timeout: Some(RECEIVE_POLL),
+        promiscuous: false,
+        ..pnet_datalink::Config::default()
+    };
+    let (mut tx, mut rx) = match pnet_datalink::channel(&interface, config_datalink) {
+        Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
+        Ok(_) => return Err(LinuxError::Io("unsupported datalink channel".to_owned()).into()),
+        Err(error) => {
+            return Err(LinuxError::Io(format!("open {}: {error}", interface.name)).into());
+        }
+    };
     let hostname = format!("{}{}", config.stb_id_prefix, mac.compact_upper());
     let xid = random_u32()?;
     let discover = packet::build_discover(mac, xid, &option60(config)?, hostname.as_bytes())?;
-    let offer = exchange(index, &discover, xid, mac, ReplyKind::Offer)?;
+    let offer = exchange(&mut *tx, &mut *rx, &discover, xid, mac, ReplyKind::Offer)?;
     let request = packet::build_request(
         mac,
         xid,
@@ -85,113 +97,228 @@ pub fn acquire_lease(
         hostname.as_bytes(),
     )?;
     let acquired_at = Instant::now();
-    let ack = exchange(index, &request, xid, mac, ReplyKind::Ack)?;
+    let ack = exchange(&mut *tx, &mut *rx, &request, xid, mac, ReplyKind::Ack)?;
     Ok((lease::from_ack(ack, acquired_at)?, mac))
 }
 
-/// Assigns the leased address and the provider routes to `interface`.
+/// Assigns the leased address and the provider routes to `interface`, like
+/// `ip addr replace` and `ip route replace ... via ... dev ... src ...`.
 pub fn configure_interface(
     interface: &str,
-    lease: &super::DhcpLease,
+    lease: &DhcpLease,
     routes: &[String],
 ) -> Result<(), DhcpError> {
-    for command in route_commands(interface, lease, routes)? {
-        run_ip_command(&command)?;
+    let routes = lease_routes(lease, routes)?;
+    let index = find_interface(interface)?.index;
+    let mut netlink = Netlink::open()?;
+    let address = format!("{}/{}", lease.address, lease.prefix_length());
+    netlink
+        .request(RTM_NEWADDR, NLM_F_REPLACE, &address_message(index, lease))
+        .map_err(|error| LinuxError::Netlink(format!("add {address}: {error}")))?;
+    for route in routes {
+        netlink
+            .request(RTM_NEWROUTE, NLM_F_REPLACE, &route_message(index, &route))
+            .map_err(|error| {
+                LinuxError::Netlink(format!(
+                    "route {}/{}: {error}",
+                    route.destination, route.prefix
+                ))
+            })?;
     }
     Ok(())
 }
 
 /// Removes a lease's address from the interface, e.g. after the server handed
 /// out a different one on renewal.
-pub fn remove_address(interface: &str, lease: &super::DhcpLease) -> Result<(), DhcpError> {
-    let address = format!("{}/{}", lease.address, lease.prefix_length());
-    run_ip_command(&["ip", "addr", "del", &address, "dev", interface].map(str::to_owned))?;
+pub fn remove_address(interface: &str, lease: &DhcpLease) -> Result<(), DhcpError> {
+    let index = find_interface(interface)?.index;
+    Netlink::open()?
+        .request(RTM_DELADDR, 0, &address_message(index, lease))
+        .map_err(|error| LinuxError::Netlink(format!("delete {}: {error}", lease.address)))?;
     Ok(())
 }
 
-fn route_commands(
-    interface: &str,
-    lease: &super::DhcpLease,
-    routes: &[String],
-) -> Result<Vec<Vec<String>>, LinuxError> {
-    let mut commands = vec![vec![
-        "ip".into(),
-        "addr".into(),
-        "replace".into(),
-        format!("{}/{}", lease.address, lease.prefix_length()),
-        "dev".into(),
-        interface.into(),
-    ]];
-    if routes.is_empty() {
-        for cidr in ["10.223.0.0/16", "20.248.0.0/13"] {
-            commands.push(vec![
-                "ip".into(),
-                "route".into(),
-                "replace".into(),
-                cidr.into(),
-                "via".into(),
-                lease.router.to_string(),
-                "dev".into(),
-                interface.into(),
-                "src".into(),
-                lease.address.to_string(),
-            ]);
-        }
-    } else {
-        commands.extend(
-            routes
-                .iter()
-                .map(|route| parse_route(route, interface, lease))
-                .collect::<Result<Vec<_>, _>>()?,
-        );
-    }
-    Ok(commands)
+fn find_interface(name: &str) -> Result<NetworkInterface, LinuxError> {
+    pnet_datalink::interfaces()
+        .into_iter()
+        .find(|interface| interface.name == name)
+        .ok_or_else(|| LinuxError::Io(format!("interface {name} not found")))
 }
-fn parse_route(
-    value: &str,
-    interface: &str,
-    lease: &super::DhcpLease,
-) -> Result<Vec<String>, LinuxError> {
-    let mut parts = value.split(',');
-    let cidr = parts
-        .next()
-        .filter(|part| is_cidr(part))
-        .ok_or(LinuxError::InvalidRoute)?;
-    let mut command = vec!["ip".into(), "route".into(), "replace".into(), cidr.into()];
-    for part in parts {
-        let (key, value) = part.split_once('=').ok_or(LinuxError::InvalidRoute)?;
-        if key != "via" && key != "src" {
-            return Err(LinuxError::InvalidRoute);
-        }
-        value
-            .parse::<std::net::Ipv4Addr>()
-            .map_err(|_| LinuxError::InvalidRoute)?;
-        command.extend([key.into(), value.into()]);
-    }
-    command.extend(["dev".into(), interface.into()]);
-    if command.len() == 6 {
-        command.extend([
-            "via".into(),
-            lease.router.to_string(),
-            "src".into(),
-            lease.address.to_string(),
-        ]);
-    }
-    Ok(command)
+
+#[derive(Debug, PartialEq, Eq)]
+struct Route {
+    destination: Ipv4Addr,
+    prefix: u8,
+    gateway: Option<Ipv4Addr>,
+    source: Option<Ipv4Addr>,
 }
-fn is_cidr(value: &str) -> bool {
-    let Some((address, prefix)) = value.split_once('/') else {
-        return false;
+
+/// The configured routes (`CIDR[,via=IP][,src=IP]`), or the provider
+/// defaults; a route naming neither gateway nor source uses the lease's.
+fn lease_routes(lease: &DhcpLease, routes: &[String]) -> Result<Vec<Route>, LinuxError> {
+    let via_lease = |destination, prefix| Route {
+        destination,
+        prefix,
+        gateway: Some(lease.router),
+        source: Some(lease.address),
     };
-    address.parse::<std::net::Ipv4Addr>().is_ok()
-        && prefix.parse::<u8>().is_ok_and(|value| value <= 32)
+    if routes.is_empty() {
+        return Ok(DEFAULT_ROUTES
+            .iter()
+            .map(|&(destination, prefix)| via_lease(destination, prefix))
+            .collect());
+    }
+    routes
+        .iter()
+        .map(|value| {
+            let mut parts = value.split(',');
+            let (destination, prefix) = parts
+                .next()
+                .and_then(|cidr| cidr.split_once('/'))
+                .and_then(|(address, prefix)| Some((address.parse().ok()?, prefix.parse().ok()?)))
+                .filter(|&(_, prefix): &(Ipv4Addr, u8)| prefix <= 32)
+                .ok_or(LinuxError::InvalidRoute)?;
+            let mut route = Route {
+                destination,
+                prefix,
+                gateway: None,
+                source: None,
+            };
+            for part in parts {
+                let (key, address) = part.split_once('=').ok_or(LinuxError::InvalidRoute)?;
+                let address = Some(address.parse().map_err(|_| LinuxError::InvalidRoute)?);
+                match key {
+                    "via" => route.gateway = address,
+                    "src" => route.source = address,
+                    _ => return Err(LinuxError::InvalidRoute),
+                }
+            }
+            if route.gateway.is_none() && route.source.is_none() {
+                route = via_lease(destination, prefix);
+            }
+            Ok(route)
+        })
+        .collect()
 }
+
+const RTM_NEWADDR: u16 = 20;
+const RTM_DELADDR: u16 = 21;
+const RTM_NEWROUTE: u16 = 24;
+const NLMSG_ERROR: u16 = 2;
+const NLM_F_REQUEST: u16 = 0x1;
+const NLM_F_ACK: u16 = 0x4;
+/// `NLM_F_REPLACE | NLM_F_CREATE`: what `ip ... replace` sends.
+const NLM_F_REPLACE: u16 = 0x100 | 0x400;
+const AF_INET: u8 = 2;
+const IFA_ADDRESS: u16 = 1;
+const IFA_LOCAL: u16 = 2;
+const RTA_DST: u16 = 1;
+const RTA_OIF: u16 = 4;
+const RTA_GATEWAY: u16 = 5;
+const RTA_PREFSRC: u16 = 7;
+const RT_TABLE_MAIN: u8 = 254;
+const RTPROT_BOOT: u8 = 3;
+const RT_SCOPE_UNIVERSE: u8 = 0;
+const RT_SCOPE_LINK: u8 = 253;
+const RTN_UNICAST: u8 = 1;
+
+/// Appends a 4-byte route attribute (`struct rtattr` plus payload).
+fn attribute(message: &mut Vec<u8>, kind: u16, value: [u8; 4]) {
+    message.extend_from_slice(&8_u16.to_ne_bytes());
+    message.extend_from_slice(&kind.to_ne_bytes());
+    message.extend_from_slice(&value);
+}
+
+/// `struct ifaddrmsg` and its attributes for the lease's address.
+fn address_message(index: u32, lease: &DhcpLease) -> Vec<u8> {
+    let prefix = u8::try_from(lease.prefix_length()).unwrap_or(32);
+    let mut message = vec![AF_INET, prefix, 0, RT_SCOPE_UNIVERSE];
+    message.extend_from_slice(&index.to_ne_bytes());
+    attribute(&mut message, IFA_LOCAL, lease.address.octets());
+    attribute(&mut message, IFA_ADDRESS, lease.address.octets());
+    message
+}
+
+/// `struct rtmsg` and its attributes for a main-table unicast route.
+fn route_message(index: u32, route: &Route) -> Vec<u8> {
+    let mut message = vec![
+        AF_INET,
+        route.prefix,
+        0,
+        0,
+        RT_TABLE_MAIN,
+        RTPROT_BOOT,
+        // A route without a gateway is directly connected, as `ip` infers.
+        if route.gateway.is_some() {
+            RT_SCOPE_UNIVERSE
+        } else {
+            RT_SCOPE_LINK
+        },
+        RTN_UNICAST,
+        0,
+        0,
+        0,
+        0,
+    ];
+    attribute(&mut message, RTA_DST, route.destination.octets());
+    if let Some(gateway) = route.gateway {
+        attribute(&mut message, RTA_GATEWAY, gateway.octets());
+    }
+    attribute(&mut message, RTA_OIF, index.to_ne_bytes());
+    if let Some(source) = route.source {
+        attribute(&mut message, RTA_PREFSRC, source.octets());
+    }
+    message
+}
+
+/// A route-netlink socket for sequential acknowledged requests.
+struct Netlink {
+    socket: Socket,
+    sequence: u32,
+}
+
+impl Netlink {
+    fn open() -> Result<Self, LinuxError> {
+        let socket = Socket::new(NETLINK_ROUTE)
+            .and_then(|socket| socket.connect(&SocketAddr::new(0, 0)).map(|()| socket))
+            .map_err(|error| LinuxError::Netlink(format!("open netlink socket: {error}")))?;
+        Ok(Self {
+            socket,
+            sequence: 0,
+        })
+    }
+
+    /// Sends one request and returns the kernel's acknowledgement.
+    fn request(&mut self, kind: u16, flags: u16, body: &[u8]) -> io::Result<()> {
+        self.sequence += 1;
+        let length = u32::try_from(16 + body.len()).map_err(io::Error::other)?;
+        let mut message = Vec::with_capacity(16 + body.len());
+        message.extend_from_slice(&length.to_ne_bytes());
+        message.extend_from_slice(&kind.to_ne_bytes());
+        message.extend_from_slice(&(NLM_F_REQUEST | NLM_F_ACK | flags).to_ne_bytes());
+        message.extend_from_slice(&self.sequence.to_ne_bytes());
+        message.extend_from_slice(&0_u32.to_ne_bytes());
+        message.extend_from_slice(body);
+        self.socket.send(&message, 0)?;
+        let mut reply = Vec::with_capacity(4096);
+        self.socket.recv(&mut reply, 0)?;
+        // The only reply to an acknowledged request is `nlmsgerr`: the header,
+        // then the negated errno (zero for success).
+        let error = reply
+            .get(16..20)
+            .filter(|_| reply.get(4..6) == Some(&NLMSG_ERROR.to_ne_bytes()[..]))
+            .and_then(|code| code.try_into().ok())
+            .map(i32::from_ne_bytes)
+            .ok_or_else(|| io::Error::other("unexpected netlink reply"))?;
+        match error {
+            0 => Ok(()),
+            error => Err(io::Error::from_raw_os_error(-error)),
+        }
+    }
+}
+
 fn random_u32() -> Result<u32, LinuxError> {
-    let mut bytes = [0; 4];
-    fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
-        .map_err(|error| LinuxError::Io(format!("read /dev/urandom: {error}")))?;
-    Ok(u32::from_ne_bytes(bytes))
+    getrandom::u32().map_err(|error| LinuxError::Io(format!("random number: {error}")))
 }
 
 fn option60(config: &ClientConfig<'_>) -> Result<Vec<u8>, DhcpError> {
@@ -227,196 +354,97 @@ fn check_capabilities() -> Result<(), LinuxError> {
 
 /// Broadcasts `frame` and waits for this transaction's reply.
 fn exchange(
-    index: i32,
+    tx: &mut dyn DataLinkSender,
+    rx: &mut dyn DataLinkReceiver,
     frame: &[u8],
     xid: u32,
     mac: MacAddress,
     kind: ReplyKind,
 ) -> Result<packet::DhcpReply, DhcpError> {
-    let socket = RawPacketSocket::open(index)?;
-    socket.send(frame, index)?;
+    tx.send_to(frame, None)
+        .unwrap_or_else(|| Err(io::Error::other("frame was not sent")))
+        .map_err(|error| LinuxError::Io(format!("send: {error}")))?;
     let deadline = Instant::now() + STAGE_TIMEOUT;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(LinuxError::Timeout.into());
-        }
-        match packet::decode_reply(&socket.receive(remaining)?, xid, mac, kind) {
-            Ok(reply) => return Ok(reply),
-            Err(packet::PacketError::Nak) => return Err(LinuxError::Nak.into()),
-            // Other traffic on the interface.
-            Err(_) => {}
-        }
-    }
-}
-
-fn interface_index(interface: &str) -> Result<i32, LinuxError> {
-    let name = CString::new(interface)
-        .map_err(|_| LinuxError::Io(format!("interface name {interface:?}")))?;
-    // SAFETY: `name` is a NUL-terminated interface name owned by this call.
-    let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
-    i32::try_from(index)
-        .ok()
-        .filter(|index| *index > 0)
-        .ok_or_else(|| os_error(&format!("find interface {interface}")))
-}
-
-fn link_address(index: i32, destination: Option<[u8; 8]>) -> libc::sockaddr_ll {
-    libc::sockaddr_ll {
-        sll_family: AF_PACKET,
-        sll_protocol: ETH_P_IP.to_be(),
-        sll_ifindex: index,
-        sll_hatype: u16::from(destination.is_some()),
-        sll_pkttype: 0,
-        sll_halen: if destination.is_some() { 6 } else { 0 },
-        sll_addr: destination.unwrap_or_default(),
-    }
-}
-
-#[expect(clippy::cast_possible_truncation, reason = "sockaddr_ll is 20 bytes")]
-const LINK_ADDRESS_LEN: libc::socklen_t =
-    std::mem::size_of::<libc::sockaddr_ll>() as libc::socklen_t;
-
-struct RawPacketSocket {
-    fd: libc::c_int,
-}
-
-impl RawPacketSocket {
-    fn open(index: i32) -> Result<Self, LinuxError> {
-        // SAFETY: libc receives only constants and no borrowed Rust pointers.
-        let fd = unsafe {
-            libc::socket(
-                libc::AF_PACKET,
-                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
-                i32::from(ETH_P_IP.to_be()),
-            )
-        };
-        if fd < 0 {
-            return Err(os_error("open raw socket"));
-        }
-        let socket = Self { fd };
-        let address = link_address(index, None);
-        // SAFETY: `address` is initialized and `LINK_ADDRESS_LEN` is its exact size.
-        if unsafe {
-            libc::bind(
-                socket.fd,
-                std::ptr::from_ref(&address).cast(),
-                LINK_ADDRESS_LEN,
-            )
-        } < 0
-        {
-            return Err(os_error("bind raw socket"));
-        }
-        Ok(socket)
-    }
-
-    fn send(&self, frame: &[u8], index: i32) -> Result<(), LinuxError> {
-        let address = link_address(index, Some([0xff; 8]));
-        // SAFETY: `frame` and `address` remain valid for the synchronous syscall.
-        let sent = unsafe {
-            libc::sendto(
-                self.fd,
-                frame.as_ptr().cast(),
-                frame.len(),
-                0,
-                std::ptr::from_ref(&address).cast(),
-                LINK_ADDRESS_LEN,
-            )
-        };
-        if usize::try_from(sent).ok() != Some(frame.len()) {
-            return Err(os_error("send"));
-        }
-        Ok(())
-    }
-
-    fn receive(&self, timeout: Duration) -> Result<Vec<u8>, LinuxError> {
-        let millis = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
-        loop {
-            let mut poll = libc::pollfd {
-                fd: self.fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: `poll` is a valid one-element descriptor array.
-            let ready = unsafe { libc::poll(&raw mut poll, 1, millis) };
-            if ready == 0 {
-                return Err(LinuxError::Timeout);
-            }
-            let mut buffer = vec![0; 2048];
-            let received = if ready < 0 {
-                -1
-            } else {
-                // SAFETY: `buffer` is valid writable storage for its declared length.
-                unsafe { libc::recv(self.fd, buffer.as_mut_ptr().cast(), buffer.len(), 0) }
-            };
-            if let Ok(received) = usize::try_from(received) {
-                buffer.truncate(received);
-                return Ok(buffer);
-            }
-            if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                return Err(os_error("receive"));
-            }
+    while Instant::now() < deadline {
+        match rx.next() {
+            Ok(reply) => match packet::decode_reply(reply, xid, mac, kind) {
+                Ok(reply) => return Ok(reply),
+                Err(packet::PacketError::Nak) => return Err(LinuxError::Nak.into()),
+                // Other traffic on the interface, including our own frames.
+                Err(_) => {}
+            },
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
+                ) => {}
+            Err(error) => return Err(LinuxError::Io(format!("receive: {error}")).into()),
         }
     }
-}
-
-impl Drop for RawPacketSocket {
-    fn drop(&mut self) {
-        // SAFETY: this object owns the descriptor and closes it exactly once.
-        unsafe { libc::close(self.fd) };
-    }
-}
-
-fn run_ip_command(argv: &[String]) -> Result<(), LinuxError> {
-    let status = Command::new(&argv[0])
-        .args(&argv[1..])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|error| LinuxError::Command(format!("{}: {error}", argv.join(" "))))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(LinuxError::Command(format!("{}: {status}", argv.join(" "))))
-    }
+    Err(LinuxError::Timeout.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn route(
+        destination: [u8; 4],
+        prefix: u8,
+        gateway: Option<[u8; 4]>,
+        source: Option<[u8; 4]>,
+    ) -> Route {
+        Route {
+            destination: Ipv4Addr::from(destination),
+            prefix,
+            gateway: gateway.map(Ipv4Addr::from),
+            source: source.map(Ipv4Addr::from),
+        }
+    }
+
     #[test]
-    fn default_routes_match_python_argv() {
-        let lease = super::super::lease::test_lease();
+    fn default_routes_match_python() {
+        let lease = lease::test_lease();
+        let via = Some([192, 0, 2, 1]);
+        let src = Some([192, 0, 2, 44]);
         assert_eq!(
-            route_commands("eth0", &lease, &[]).unwrap_or_default(),
-            vec![
-                vec!["ip", "addr", "replace", "192.0.2.44/24", "dev", "eth0"],
-                vec![
-                    "ip",
-                    "route",
-                    "replace",
-                    "10.223.0.0/16",
-                    "via",
-                    "192.0.2.1",
-                    "dev",
-                    "eth0",
-                    "src",
-                    "192.0.2.44"
-                ],
-                vec![
-                    "ip",
-                    "route",
-                    "replace",
-                    "20.248.0.0/13",
-                    "via",
-                    "192.0.2.1",
-                    "dev",
-                    "eth0",
-                    "src",
-                    "192.0.2.44"
-                ]
+            lease_routes(&lease, &[]).unwrap(),
+            [
+                route([10, 223, 0, 0], 16, via, src),
+                route([20, 248, 0, 0], 13, via, src)
             ]
         );
+    }
+
+    #[test]
+    fn route_overrides_keep_given_fields_and_reject_unknown_keys() {
+        let lease = lease::test_lease();
+        let routes = [
+            "198.51.100.0/24".to_owned(),
+            "203.0.113.0/24,via=192.0.2.9".to_owned(),
+        ];
+        assert_eq!(
+            lease_routes(&lease, &routes).unwrap(),
+            [
+                route(
+                    [198, 51, 100, 0],
+                    24,
+                    Some([192, 0, 2, 1]),
+                    Some([192, 0, 2, 44])
+                ),
+                route([203, 0, 113, 0], 24, Some([192, 0, 2, 9]), None),
+            ]
+        );
+        for bad in [
+            "10.0.0.0/33",
+            "10.0.0.0",
+            "10.0.0.0/8,dev=eth0",
+            "10.0.0.0/8,via=x",
+        ] {
+            assert_eq!(
+                lease_routes(&lease, &[bad.to_owned()]),
+                Err(LinuxError::InvalidRoute)
+            );
+        }
     }
 }

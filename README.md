@@ -142,6 +142,33 @@ feed render, so logos added later appear after the next metadata refresh.
 variables from `/opt/iptv/var/iptv.env` and grants only `CAP_NET_RAW` and
 `CAP_NET_ADMIN`, which DHCP needs.
 
+### Static builds (containers, OpenWrt)
+
+The server is a single self-contained binary: it configures the interface over
+rtnetlink instead of calling `ip`, contains no C code and no `unsafe`, and
+speaks plain HTTP only (the provider's endpoints are all `http://`). A static
+musl build therefore runs in a `FROM scratch`/distroless image or on OpenWrt
+with nothing else installed:
+
+```bash
+rustup target add --toolchain 1.87.0 x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+rustup run 1.87.0 cargo build --manifest-path rust/Cargo.toml --release \
+  --target x86_64-unknown-linux-musl
+# Cross targets link with the bundled LLD; no C cross toolchain is needed.
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
+  rustup run 1.87.0 cargo build --manifest-path rust/Cargo.toml --release \
+  --target aarch64-unknown-linux-musl
+```
+
+`armv7-unknown-linux-musleabihf` builds the same way. MIPS targets are tier 3
+in Rust 1.87 and need a nightly toolchain with `-Zbuild-std`.
+
+At run time the process needs `CAP_NET_RAW` and `CAP_NET_ADMIN`, `/proc`
+(to check them), and the IPTV interface in its network namespace, e.g.
+`--network host --cap-add NET_RAW --cap-add NET_ADMIN` for a container.
+On OpenWrt, a procd service with `respawn` takes the role of
+`Restart=on-failure`.
+
 ## Public-release hygiene
 
 The repository ignores local captures, device dumps, APKs, native libraries,

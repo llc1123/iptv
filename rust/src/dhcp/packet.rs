@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt, net::Ipv4Addr, str::FromStr};
+use std::{collections::HashMap, fmt, net::Ipv4Addr};
 use thiserror::Error;
 pub const PARAMETER_REQUEST_LIST: [u8; 10] = [1, 121, 33, 3, 6, 15, 28, 51, 58, 59];
 const BOOTP: usize = 236;
@@ -18,25 +18,6 @@ impl MacAddress {
     }
     pub fn compact_upper(self) -> String {
         hex::encode_upper(self.0)
-    }
-}
-impl FromStr for MacAddress {
-    type Err = PacketError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let mut octets = [0; 6];
-        let mut parts = value.split(':');
-        for octet in &mut octets {
-            let part = parts.next().ok_or(PacketError::InvalidMac)?;
-            if part.len() != 2 {
-                return Err(PacketError::InvalidMac);
-            }
-            *octet = u8::from_str_radix(part, 16).map_err(|_| PacketError::InvalidMac)?;
-        }
-        if parts.next().is_some() {
-            return Err(PacketError::InvalidMac);
-        }
-        Ok(Self(octets))
     }
 }
 impl fmt::Display for MacAddress {
@@ -69,8 +50,6 @@ pub struct DhcpReply {
 pub enum PacketError {
     #[error("malformed DHCP frame")]
     Malformed,
-    #[error("invalid DHCP interface address")]
-    InvalidMac,
     #[error("unexpected DHCP response")]
     Unexpected,
     #[error("DHCP NAK")]

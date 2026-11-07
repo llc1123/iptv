@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use reqwest::redirect::Policy;
 use reqwest::{Client, Response, Url};
-use ring::rand::{SecureRandom, SystemRandom};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -117,7 +116,6 @@ impl EpgClient {
     pub fn new(config: EpgConfig) -> Result<Self, EpgError> {
         let client = Client::builder()
             .cookie_store(true)
-            .use_rustls_tls()
             .http1_only()
             .no_proxy()
             .redirect(Policy::limited(20))
@@ -459,9 +457,7 @@ impl EpgClient {
 
 fn random_nonce() -> Result<u32, EpgError> {
     let mut bytes = [0_u8; 8];
-    SystemRandom::new()
-        .fill(&mut bytes)
-        .map_err(|_| EpgError::Random)?;
+    getrandom::fill(&mut bytes).map_err(|_| EpgError::Random)?;
     u32::try_from(u64::from_be_bytes(bytes) % 100_000_000).map_err(|_| EpgError::Random)
 }
 

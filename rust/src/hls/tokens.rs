@@ -1,6 +1,5 @@
 //! Short-lived, unguessable proxy tokens for upstream HLS resources.
 
-use ring::rand::{SecureRandom, SystemRandom};
 use std::{
     collections::HashMap,
     sync::Mutex,
@@ -140,9 +139,7 @@ impl TokenStore {
 fn random_token(suffix: &str) -> Result<String, TokenStoreError> {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut bytes = [0_u8; 18];
-    SystemRandom::new()
-        .fill(&mut bytes)
-        .map_err(|_| TokenStoreError::Unavailable)?;
+    getrandom::fill(&mut bytes).map_err(|_| TokenStoreError::Unavailable)?;
     let mut token = String::with_capacity(24 + suffix.len());
     for chunk in bytes.chunks_exact(3) {
         let bits = u32::from(chunk[0]) << 16 | u32::from(chunk[1]) << 8 | u32::from(chunk[2]);

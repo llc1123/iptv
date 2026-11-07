@@ -1,4 +1,4 @@
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 //! Typed configuration and error contracts for the Rust IPTV media server.
 
 pub mod config;
