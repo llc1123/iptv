@@ -10,6 +10,10 @@ use std::{
 
 type RenderCache = Mutex<HashMap<(RenderKind, String), Arc<[u8]>>>;
 
+/// Feeds embed the client's Host header, so each distinct host is a separate
+/// body; past this many the snapshot renders without caching.
+const RENDER_CACHE_ENTRIES: usize = 16;
+
 pub struct Snapshot {
     channels: Vec<BootChannel>,
     programmes: Vec<Programme>,
@@ -68,7 +72,9 @@ impl Snapshot {
         };
         let bytes: Arc<[u8]> = Arc::from(bytes);
         if let Ok(mut cache) = self.rendered.lock() {
-            cache.insert(key, Arc::clone(&bytes));
+            if cache.len() < RENDER_CACHE_ENTRIES {
+                cache.insert(key, Arc::clone(&bytes));
+            }
         }
         Ok(bytes)
     }

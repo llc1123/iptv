@@ -96,8 +96,17 @@ pub(super) fn write_component(writer: &mut Writer, value: &str) -> Result<(), Re
     Ok(())
 }
 
+/// Characters XML 1.0 forbids even as character references; the feed drops
+/// them so one bad provider title cannot invalidate the whole document.
+fn xml_char(character: char) -> bool {
+    matches!(
+        character,
+        '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..
+    )
+}
+
 pub(super) fn xml_text(writer: &mut Writer, value: &str) -> Result<(), RenderError> {
-    for character in value.chars() {
+    for character in value.chars().filter(|character| xml_char(*character)) {
         let mut encoded = [0; 4];
         let text = match character {
             '&' => "&amp;",
@@ -111,7 +120,7 @@ pub(super) fn xml_text(writer: &mut Writer, value: &str) -> Result<(), RenderErr
 }
 
 pub(super) fn xml_attr(writer: &mut Writer, value: &str) -> Result<(), RenderError> {
-    for character in value.chars() {
+    for character in value.chars().filter(|character| xml_char(*character)) {
         let mut encoded = [0; 4];
         let text = match character {
             '&' => "&amp;",
@@ -126,4 +135,17 @@ pub(super) fn xml_attr(writer: &mut Writer, value: &str) -> Result<(), RenderErr
         writer.text(text, false)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xml_output_drops_characters_xml_forbids() {
+        let mut writer = Writer::output(1024, 64).unwrap();
+        xml_text(&mut writer, "a\u{b}b\u{1}c\u{fffe}\t<").unwrap();
+        xml_attr(&mut writer, "d\u{c}e\n").unwrap();
+        assert_eq!(writer.finish().unwrap(), b"abc\t&lt;de&#10;");
+    }
 }
