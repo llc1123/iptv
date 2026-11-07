@@ -7,10 +7,8 @@ pub mod dhcp;
 pub mod epg;
 pub mod error;
 pub mod guide;
-pub mod health;
 pub mod hls;
 pub mod http;
-pub mod lifecycle;
 pub mod logo_catalog;
 pub mod refresh;
 pub mod render;
@@ -21,8 +19,7 @@ pub mod startup;
 /// Parses the process arguments and validates the operator configuration.
 ///
 /// # Errors
-/// Returns [`error::AppError`] when argument parsing or configuration validation fails.
-pub fn load_config() -> Result<config::Config, error::AppError> {
+pub fn load_config() -> Result<config::Config, Box<dyn std::error::Error + Send + Sync>> {
     config::Config::from_environment()
 }
 
@@ -30,6 +27,6 @@ pub fn load_config() -> Result<config::Config, error::AppError> {
 ///
 /// # Errors
 /// Returns a fixed operational error when startup or serving is refused.
-pub async fn run(config: config::Config) -> Result<(), error::AppError> {
+pub async fn run(config: config::Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     startup::run(config).await
 }

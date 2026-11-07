@@ -1,32 +1,37 @@
-use std::{fmt, path::PathBuf, str::FromStr};
-
 use clap::Parser;
-
-use crate::error::{AppError, ConfigError};
+use std::{fmt, path::PathBuf, str::FromStr};
+use thiserror::Error;
 
 const DEFAULT_AUTH_URL: &str = "https://example.invalid/EDS/jsp/AuthenticationURL";
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Secret(String);
-
 impl Secret {
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
-
 impl FromStr for Secret {
     type Err = std::convert::Infallible;
-
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Ok(Self(value.to_owned()))
     }
 }
-
 impl fmt::Debug for Secret {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("***")
     }
+}
+impl fmt::Display for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("missing required credential: {0}")]
+    MissingCredential(&'static str),
 }
 
 #[derive(Clone, Debug, Parser, PartialEq, Eq)]
@@ -81,40 +86,18 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_environment() -> Result<Self, AppError> {
-        match Self::try_parse() {
-            Ok(config) => {
-                require(&config.dhcp_user, "IPTV_DHCP_USER")?;
-                require(&config.dhcp_password, "IPTV_DHCP_PASSWORD")?;
-                require(&config.epg_user, "IPTV_USER_ID")?;
-                require(&config.epg_password, "IPTV_PASSWORD")?;
-                Ok(config)
-            }
-            Err(error) => {
-                if matches!(
-                    error.kind(),
-                    clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
-                ) {
-                    error
-                        .print()
-                        .map_err(|_| AppError::Arguments(crate::error::ArgumentError::Invalid))?;
-                    let kind = if error.kind() == clap::error::ErrorKind::DisplayHelp {
-                        crate::error::ArgumentError::Help
-                    } else {
-                        crate::error::ArgumentError::Version
-                    };
-                    Err(AppError::Arguments(kind))
-                } else {
-                    Err(error.into())
-                }
+    pub fn from_environment() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let config = Self::try_parse()?;
+        for (value, name) in [
+            (&config.dhcp_user, "IPTV_DHCP_USER"),
+            (&config.dhcp_password, "IPTV_DHCP_PASSWORD"),
+            (&config.epg_user, "IPTV_USER_ID"),
+            (&config.epg_password, "IPTV_PASSWORD"),
+        ] {
+            if value.as_str().is_empty() {
+                return Err(Box::new(ConfigError::MissingCredential(name)));
             }
         }
+        Ok(config)
     }
-}
-
-fn require(value: &Secret, name: &'static str) -> Result<(), AppError> {
-    if value.as_str().is_empty() {
-        return Err(ConfigError::MissingCredential(name).into());
-    }
-    Ok(())
 }
