@@ -26,11 +26,8 @@ impl Snapshot {
         guide_zone: GuideZone,
         catchup_days: u16,
     ) -> Arc<Self> {
-        let programmes: Vec<_> = programmes
-            .into_iter()
-            .filter(|p| p.start_time_ms < p.end_time_ms)
-            .collect();
-        let by_id = ProgrammeIndex::new(programmes.clone());
+        let by_id = ProgrammeIndex::new(programmes);
+        let programmes = by_id.programmes().to_vec();
         Arc::new(Self {
             channels,
             programmes,

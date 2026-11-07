@@ -4,17 +4,22 @@ use crate::{
     epg::{EpgClient, EpgConfig},
     guide::{GuideCache, GuideZone},
     hls::TokenStore,
-    http::{AppState, ServiceControl, router},
+    http::{AppState, MetadataPaths, router},
     logo_catalog::LogoCatalog,
     refresh,
     snapshot::Snapshot,
 };
 use chrono_tz::Tz;
 use std::{net::IpAddr, sync::Arc};
-use tokio::sync::{RwLock, mpsc, watch};
+use tokio::{
+    sync::{RwLock, mpsc, watch},
+    time::{Duration, timeout},
+};
 
 pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let zone = config.guide_timezone.parse::<Tz>().map(GuideZone::Iana)?;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let signal_task = tokio::spawn(signal(shutdown_tx.clone()));
     let interface = config.interface.clone();
     let dhcp_user = config.dhcp_user.as_str().to_owned();
     let dhcp_password = config.dhcp_password.as_str().to_owned();
@@ -49,7 +54,7 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send 
     let (channels, programmes, cache_loaded) = if let Some(programmes) = guide_cache.load() {
         (channels, programmes, true)
     } else {
-        let (channels, programmes) = refresh::refresh_once(&epg, &config, &zone).await?;
+        let (channels, programmes) = refresh::refresh_once(&epg, &config, &zone, None).await?;
         (channels, programmes, false)
     };
     let snapshots = Arc::new(RwLock::new(Snapshot::new(
@@ -67,35 +72,44 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send 
     };
     let tokens = Arc::new(TokenStore::default());
     let (refresh_tx, refresh_rx) = mpsc::channel(16);
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let state = Arc::new(AppState::new(
         epg.clone(),
         Arc::clone(&snapshots),
         tokens,
         logos,
         zone.clone(),
-        ServiceControl {
-            refresh: refresh_tx,
-            shutdown: shutdown_tx.clone(),
+        refresh_tx,
+        MetadataPaths {
+            catalog: if config.logo_catalog.as_os_str().is_empty() {
+                String::new()
+            } else {
+                config.logo_catalog.display().to_string()
+            },
+            guide_cache: config.guide_cache.display().to_string(),
         },
     ));
     let refresh_state = Arc::clone(&snapshots);
     let refresh_config = config.clone();
     let guide_zone_for_task = zone.clone();
-    tokio::spawn(refresh::run_loop(
+    let refresh_handle = tokio::spawn(refresh::run_loop(
         epg,
         refresh_config,
         guide_zone_for_task,
         refresh_state,
         refresh_rx,
         cache_loaded,
-        shutdown_rx,
+        shutdown_rx.clone(),
     ));
     let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port)).await?;
-    let shutdown = signal(shutdown_tx);
     axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown)
+        .with_graceful_shutdown(async move {
+            let mut shutdown = shutdown_rx;
+            let _ = shutdown.changed().await;
+        })
         .await?;
+    let _ = shutdown_tx.send(true);
+    let _ = timeout(Duration::from_secs(5), refresh_handle).await;
+    signal_task.abort();
     Ok(())
 }
 
