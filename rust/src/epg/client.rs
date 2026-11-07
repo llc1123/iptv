@@ -79,12 +79,6 @@ pub enum EpgError {
     Parse(String),
 }
 
-impl From<EpgError> for crate::error::AppError {
-    fn from(_: EpgError) -> Self {
-        Self::Request(crate::error::RequestError::EpgHttp)
-    }
-}
-
 /// Parameters for one programme-window request.
 pub struct ProgrammeQuery {
     pub channel_id: String,
