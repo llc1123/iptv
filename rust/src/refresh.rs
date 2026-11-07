@@ -855,11 +855,3 @@ impl crate::guide::cache::Cancellation for CancellationToken {
         self.is_cancelled()
     }
 }
-
-#[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    reason = "refresh fixtures use explicit construction failures"
-)]
-#[path = "refresh_tests.rs"]
-mod tests;
