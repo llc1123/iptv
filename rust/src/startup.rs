@@ -1,7 +1,6 @@
 //! Production startup composition for the media server.
 
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,14 +19,13 @@ use crate::guide::{
     CacheFingerprint, GuideCache, GuideZone, SystemGuideClock, build_windows_from_clock,
 };
 use crate::health::SnapshotCounts;
-use crate::hls::{HlsPolicy, TokenStore};
+use crate::hls::TokenStore;
 use crate::http::{
     AppState, AppStateParts, EpgPlaybackResolver, PolicyForwarder, ServeState, SystemEpochClock,
-    SystemResolver, build_router, serve_with_gate,
+    build_router, serve,
 };
 use crate::lifecycle::{CancellationSource, CancellationToken, Lifecycle};
 use crate::logo_catalog::LogoCatalog;
-use crate::preflight::{PythonPreflight, StartupRefusal, acquire_startup_gate};
 use crate::refresh::{
     EpgMetadataSource, MetadataSource, RefreshEngine, RefreshEngineConfig, RefreshSupervisor,
 };
@@ -60,25 +58,13 @@ pub async fn run(config: Config) -> Result<(), AppError> {
     })?;
     let cancellation = CancellationSource::new();
     let signal_task = tokio::spawn(signal_watcher(cancellation.clone()));
-    let state_dir = state_dir(&config);
-    let preflight = PythonPreflight::for_config(PathBuf::from("/proc"), &config);
-    let gate = match acquire_startup_gate(&config, &state_dir, &preflight) {
-        Ok(gate) => gate,
-        Err(refusal) => {
-            report_startup_stage("preflight");
-            cancellation.cancel();
-            let _ = signal_task.await;
-            return Err(map_refusal(refusal));
-        }
-    };
     if cancellation.token().is_cancelled() {
-        drop(gate);
         let _ = signal_task.await;
         report_startup_stage("preflight");
         return Err(startup_error());
     }
 
-    let startup = compose_after_gate(&config, zone, windows, gate, cancellation.clone()).await;
+    let startup = compose_after_gate(&config, zone, windows, cancellation.clone()).await;
     cancellation.cancel();
     let _ = signal_task.await;
     startup
@@ -95,7 +81,6 @@ async fn compose_after_gate(
     config: &Config,
     zone: GuideZone,
     windows: Vec<crate::guide::GuideWindow>,
-    gate: crate::startup_gate::StartupGate,
     cancellation: CancellationSource,
 ) -> Result<(), AppError> {
     let token = cancellation.token();
@@ -109,18 +94,7 @@ async fn compose_after_gate(
     let prepared =
         prepare_engine(config, zone, windows, lease, interface_mac, token.clone()).await?;
     let tokens = Arc::new(TokenStore::default());
-    let policy = Arc::new(
-        HlsPolicy::new(
-            config.upstream_allow_hosts.clone(),
-            config.upstream_allow_cidrs.clone(),
-            Arc::new(SystemResolver),
-        )
-        .map_err(|_| {
-            report_startup_stage("hls-policy");
-            startup_error()
-        })?,
-    );
-    let hls = Arc::new(PolicyForwarder::new(policy, tokens.clone()));
+    let hls = Arc::new(PolicyForwarder::new(tokens.clone()));
     let playback = Arc::new(EpgPlaybackResolver::with_runtime(
         prepared.client,
         prepared.store.clone(),
@@ -148,13 +122,13 @@ async fn compose_after_gate(
         let _ = supervisor.stop(REFRESH_STOP_TIMEOUT).await;
         return Err(startup_error());
     }
-    let result = serve_with_gate(
-        gate,
+    let result = serve(
         router,
+        format!("{}:{}", config.host, config.port),
         ServeState {
             lifecycle,
             health: prepared.health,
-            grace: Duration::from_secs(config.shutdown_grace_seconds),
+            grace: Duration::from_secs(60),
         },
         async move { token.cancelled().await },
     )
@@ -407,13 +381,6 @@ async fn signal_watcher(source: CancellationSource) {
     }
 }
 
-fn state_dir(config: &Config) -> PathBuf {
-    config
-        .guide_cache
-        .parent()
-        .map_or_else(|| Path::new(".").to_path_buf(), Path::to_path_buf)
-}
-
 fn startup_error() -> AppError {
     AppError::Startup(StartupError::Startup)
 }
@@ -501,10 +468,6 @@ fn report_packet_stage(error: &PacketError) {
         PacketError::PacketTooLarge => "dhcp-size",
     };
     report_startup_stage(stage);
-}
-
-fn map_refusal(_refusal: StartupRefusal) -> AppError {
-    startup_error()
 }
 
 #[cfg(test)]
