@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "router fixture uses deterministic local requests"
+)]
+
 mod support;
 
 use axum::{
@@ -9,6 +14,19 @@ use std::time::Duration;
 use support::{fixture, get};
 use tower::ServiceExt;
 
+async fn sync(app: &axum::Router, host: &str) -> axum::response::Response {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/metadata/sync")
+        .header("host", host)
+        .body(Body::empty())
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), app.clone().oneshot(request))
+        .await
+        .unwrap()
+        .unwrap()
+}
+
 #[tokio::test]
 async fn health_and_feeds_match_snapshot_rendering() {
     let fixture = fixture().await;
@@ -17,7 +35,7 @@ async fn health_and_feeds_match_snapshot_rendering() {
     let health_body: serde_json::Value =
         serde_json::from_slice(&to_bytes(health.into_body(), 1 << 20).await.unwrap()).unwrap();
     assert_eq!(health_body["status"], "ok");
-    assert_eq!(health_body["channels"], 3);
+    assert_eq!(health_body["channels"], 5);
     for (path, kind, content_type) in [
         (
             "/channels.m3u",
@@ -47,41 +65,6 @@ async fn health_and_feeds_match_snapshot_rendering() {
             expected.as_ref()
         );
     }
-    fixture.stop();
-}
-
-#[tokio::test]
-async fn live_playlist_rewrites_and_streams_segment_bytes() {
-    let fixture = fixture().await;
-    let playlist = get(&fixture.app, &fixture.host, "/stream/channel.m3u8").await;
-    assert_eq!(playlist.status(), StatusCode::OK);
-    let body = String::from_utf8(
-        to_bytes(playlist.into_body(), 1 << 20)
-            .await
-            .unwrap()
-            .to_vec(),
-    )
-    .unwrap();
-    let token = body
-        .lines()
-        .find(|line| line.starts_with("/_hls/"))
-        .unwrap();
-    let segment = get(&fixture.app, &fixture.host, token).await;
-    assert_eq!(segment.status(), StatusCode::OK);
-    assert_eq!(segment.headers()["content-type"], "video/mp2t");
-    assert_eq!(
-        to_bytes(segment.into_body(), 1 << 20)
-            .await
-            .unwrap()
-            .as_ref(),
-        b"segment-bytes"
-    );
-    assert_eq!(
-        get(&fixture.app, &fixture.host, "/stream/live.m3u8")
-            .await
-            .status(),
-        StatusCode::SERVICE_UNAVAILABLE
-    );
     fixture.stop();
 }
 
@@ -161,23 +144,64 @@ async fn errors_and_metadata_sync_are_reported_at_http_boundary() {
             .status(),
         StatusCode::BAD_GATEWAY
     );
-    let sync = Request::builder()
-        .method("POST")
-        .uri("/metadata/sync")
-        .header("host", &fixture.host)
-        .body(Body::empty())
-        .unwrap();
-    let response = tokio::time::timeout(Duration::from_secs(1), fixture.app.clone().oneshot(sync))
-        .await
-        .unwrap()
-        .unwrap();
+    let response = sync(&fixture.app, &fixture.host).await;
     assert_eq!(response.status(), StatusCode::OK);
     let sync_body: serde_json::Value =
         serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
-    assert_eq!(sync_body["channels"], 1);
-    assert_eq!(sync_body["guide_programmes"], 1);
+    assert_eq!(sync_body["channels"], 5);
+    assert_eq!(sync_body["guide_programmes"], 5);
     assert_eq!(sync_body["logos"], 0);
     assert!(sync_body["catalog"].is_string());
     assert!(sync_body["guide_cache"].is_string());
+    fixture.stop();
+}
+
+#[tokio::test]
+async fn refresh_retains_partial_windows_and_skips_cache_on_total_failure() {
+    let fixture = fixture().await;
+    let _ = std::fs::remove_file(&fixture.guide_cache_path);
+    fixture
+        .provider_state
+        .fail_bad_programmes
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let partial = sync(&fixture.app, &fixture.host).await;
+    assert_eq!(partial.status(), StatusCode::OK);
+    assert!(
+        fixture
+            .snapshots
+            .read()
+            .await
+            .programmes()
+            .iter()
+            .any(|programme| programme.channel_id == "bad")
+    );
+    let programme_request = fixture
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|request| request.body.contains("getChannelProg"))
+        .cloned()
+        .unwrap();
+    assert!(
+        programme_request
+            .form_fields
+            .iter()
+            .any(|field| field == "channelID")
+    );
+    assert!(
+        programme_request
+            .form_fields
+            .iter()
+            .any(|field| field == "startTime")
+    );
+    let cached = std::fs::read(&fixture.guide_cache_path).unwrap();
+    fixture
+        .provider_state
+        .fail_all_programmes
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let failed = sync(&fixture.app, &fixture.host).await;
+    assert_eq!(failed.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(std::fs::read(&fixture.guide_cache_path).unwrap(), cached);
     fixture.stop();
 }

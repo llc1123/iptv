@@ -165,4 +165,22 @@ mod tests {
             .unwrap();
         assert_eq!(store.resolve(&resource.token).unwrap().url, resource.url);
     }
+
+    #[test]
+    fn batch_registration_is_atomic_when_one_url_is_invalid() {
+        let store = TokenStore::default();
+        let existing = store
+            .register("http://upstream.test/existing.ts", ".ts")
+            .unwrap();
+        let invalid = "x".repeat(URL_MAX_BYTES + 1);
+        assert_eq!(
+            store.register_batch(&[
+                ("http://upstream.test/new.ts".to_owned(), ".ts".to_owned()),
+                (invalid, ".ts".to_owned()),
+            ]),
+            Err(TokenStoreError::Invalid)
+        );
+        assert_eq!(store.entries.lock().unwrap().len(), 1);
+        assert_eq!(store.resolve(&existing.token).unwrap().url, existing.url);
+    }
 }

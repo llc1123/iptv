@@ -22,34 +22,54 @@ use tokio::{
 };
 use tower::ServiceExt;
 mod provider;
-use provider::{read_request, response_for};
+use provider::{ProviderState, RequestRecord, read_request, response_for};
 
 pub struct Fixture {
     pub app: Router,
     pub snapshot: Arc<Snapshot>,
+    pub snapshots: Arc<RwLock<Arc<Snapshot>>>,
     pub host: String,
+    pub requests: Arc<std::sync::Mutex<Vec<RequestRecord>>>,
+    pub provider_state: Arc<ProviderState>,
+    pub guide_cache_path: std::path::PathBuf,
     provider: tokio::task::JoinHandle<()>,
     refresh: tokio::task::JoinHandle<()>,
     shutdown: watch::Sender<bool>,
 }
 impl Fixture {
     pub fn stop(self) {
-        let _ = self.shutdown.send(true);
-        self.provider.abort();
-        self.refresh.abort();
+        let Fixture {
+            snapshot,
+            snapshots,
+            provider_state,
+            guide_cache_path,
+            provider,
+            refresh,
+            shutdown,
+            ..
+        } = self;
+        drop((snapshot, snapshots, provider_state, guide_cache_path));
+        let _ = shutdown.send(true);
+        provider.abort();
+        refresh.abort();
     }
 }
 
 pub async fn fixture() -> Fixture {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let address = listener.local_addr().unwrap();
+    let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let provider_state = Arc::new(ProviderState::default());
+    let provider_requests = Arc::clone(&requests);
+    let provider_state_for_task = Arc::clone(&provider_state);
     let provider = tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
                 return;
             };
-            let (path, body) = read_request(&mut stream).await.unwrap();
-            let response = response_for(&path, &body, address);
+            let request = read_request(&mut stream).await.unwrap();
+            provider_requests.lock().unwrap().push(request.clone());
+            let response = response_for(&request, address, &provider_state_for_task);
             stream.write_all(response.as_bytes()).await.unwrap();
         }
     });
@@ -65,32 +85,21 @@ pub async fn fixture() -> Fixture {
         user_group_id: "2025".into(),
     })
     .unwrap();
-    let config = Config::try_parse_from([
-        "iptv-media-server",
-        "--dhcp-user",
-        "d",
-        "--dhcp-password",
-        "p",
-        "--user-id",
-        "u",
-        "--password",
-        "p",
-        "--guide-past-days",
-        "0",
-        "--guide-future-days",
-        "0",
-        "--refresh-interval-seconds",
-        "3600",
-    ])
-    .unwrap();
+    let guide_cache_path = std::env::temp_dir().join(format!("iptv-guide-{}.json", address.port()));
+    let config = test_config(&guide_cache_path);
     let zone = GuideZone::from_str("UTC").unwrap();
     let snapshot = Snapshot::new(
         vec![
             channel("channel", "1"),
             channel("live", "0"),
             channel("bad", "1"),
+            channel("content-type", "1"),
+            channel("large", "1"),
         ],
-        vec![programme()],
+        vec![
+            programme(),
+            programme_for_now("bad", "bad-programme", "Bad"),
+        ],
         zone.clone(),
         1,
     );
@@ -108,7 +117,7 @@ pub async fn fixture() -> Fixture {
     ));
     let state = Arc::new(AppState::new(
         epg,
-        snapshots,
+        Arc::clone(&snapshots),
         Arc::new(TokenStore::default()),
         None,
         zone,
@@ -121,11 +130,38 @@ pub async fn fixture() -> Fixture {
     Fixture {
         app: router(state),
         snapshot,
+        snapshots,
         host: address.to_string(),
+        requests,
+        provider_state,
+        guide_cache_path,
         provider,
         refresh,
         shutdown: shutdown_tx,
     }
+}
+
+fn test_config(guide_cache_path: &std::path::Path) -> Config {
+    Config::try_parse_from([
+        "iptv-media-server",
+        "--dhcp-user",
+        "d",
+        "--dhcp-password",
+        "p",
+        "--user-id",
+        "u",
+        "--password",
+        "p",
+        "--guide-past-days",
+        "0",
+        "--guide-future-days",
+        "0",
+        "--refresh-interval-seconds",
+        "3600",
+        "--guide-cache",
+        guide_cache_path.to_str().unwrap(),
+    ])
+    .unwrap()
 }
 
 fn channel(id: &str, time_shift: &str) -> BootChannel {
@@ -144,21 +180,45 @@ fn channel(id: &str, time_shift: &str) -> BootChannel {
     }
 }
 fn programme() -> Programme {
+    programme_for("channel", "programme", "Programme")
+}
+
+fn programme_for(channel_id: &str, programme_id: &str, title: &str) -> Programme {
     Programme {
-        title: "Programme".into(),
+        title: title.into(),
         start_time_ms: 1_700_000_000_000,
         end_time_ms: 1_700_000_001_000,
-        programme_id: "programme".into(),
-        channel_id: "channel".into(),
+        programme_id: programme_id.into(),
+        channel_id: channel_id.into(),
+    }
+}
+
+fn programme_for_now(channel_id: &str, programme_id: &str, title: &str) -> Programme {
+    let start_time_ms = chrono::Utc::now().timestamp_millis();
+    Programme {
+        title: title.into(),
+        start_time_ms,
+        end_time_ms: start_time_ms + 1_000,
+        programme_id: programme_id.into(),
+        channel_id: channel_id.into(),
     }
 }
 
 pub async fn get(app: &Router, host: &str, uri: &str) -> axum::response::Response {
-    let request = axum::http::Request::builder()
-        .uri(uri)
-        .header("host", host)
-        .body(Body::empty())
-        .unwrap();
+    get_with_headers(app, host, uri, &[]).await
+}
+
+pub async fn get_with_headers(
+    app: &Router,
+    host: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+) -> axum::response::Response {
+    let mut builder = axum::http::Request::builder().uri(uri).header("host", host);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let request = builder.body(Body::empty()).unwrap();
     tokio::time::timeout(Duration::from_secs(1), app.clone().oneshot(request))
         .await
         .unwrap()
