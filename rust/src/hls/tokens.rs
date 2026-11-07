@@ -7,6 +7,8 @@ use std::{
 
 const TTL: Duration = Duration::from_secs(300);
 const CAPACITY: usize = 10_000;
+const URL_MAX_BYTES: usize = 8 * 1024;
+const STORED_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resource {
@@ -33,11 +35,13 @@ struct Entry {
 }
 pub struct TokenStore {
     entries: Mutex<HashMap<String, Entry>>,
+    stored_bytes: Mutex<usize>,
 }
 impl Default for TokenStore {
     fn default() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
+            stored_bytes: Mutex::new(0),
         }
     }
 }
@@ -49,32 +53,67 @@ impl TokenStore {
         suffix: &str,
     ) -> Result<Resource, TokenStoreError> {
         let url = url.into();
-        if url.is_empty()
-            || suffix.len() > 6
-            || suffix
-                .bytes()
-                .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
-        {
+        let resources = self.register_batch(&[(url, suffix.to_owned())])?;
+        resources
+            .into_iter()
+            .next()
+            .ok_or(TokenStoreError::Unavailable)
+    }
+
+    pub fn register_batch(
+        &self,
+        values: &[(String, String)],
+    ) -> Result<Vec<Resource>, TokenStoreError> {
+        if values.iter().any(|(url, suffix)| {
+            url.is_empty()
+                || url.len() > URL_MAX_BYTES
+                || suffix.len() > 6
+                || suffix
+                    .bytes()
+                    .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
+        }) {
             return Err(TokenStoreError::Invalid);
         }
-        let token = format!("{}{}", random_token()?, suffix);
+        let tokens = values
+            .iter()
+            .map(|(_, suffix)| Ok(format!("{}{}", random_token()?, suffix)))
+            .collect::<Result<Vec<_>, TokenStoreError>>()?;
         let now = Instant::now();
         let mut entries = self
             .entries
             .lock()
             .map_err(|_| TokenStoreError::Unavailable)?;
         entries.retain(|_, entry| entry.expires_at > now);
-        if entries.len() >= CAPACITY {
+        let mut stored_bytes = self
+            .stored_bytes
+            .lock()
+            .map_err(|_| TokenStoreError::Unavailable)?;
+        *stored_bytes = entries.values().map(|entry| entry.url.len()).sum();
+        if entries.len().saturating_add(values.len()) > CAPACITY
+            || stored_bytes.saturating_add(values.iter().map(|(url, _)| url.len()).sum())
+                > STORED_BYTES
+        {
             return Err(TokenStoreError::Capacity);
         }
-        entries.insert(
-            token.clone(),
-            Entry {
-                url: url.clone(),
-                expires_at: now + TTL,
-            },
-        );
-        Ok(Resource { token, url })
+        let resources = values
+            .iter()
+            .zip(tokens)
+            .map(|((url, _), token)| {
+                entries.insert(
+                    token.clone(),
+                    Entry {
+                        url: url.clone(),
+                        expires_at: now + TTL,
+                    },
+                );
+                Ok(Resource {
+                    token,
+                    url: url.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, TokenStoreError>>()?;
+        *stored_bytes += values.iter().map(|(url, _)| url.len()).sum::<usize>();
+        Ok(resources)
     }
     pub fn resolve(&self, token: &str) -> Result<Resource, TokenStoreError> {
         let now = Instant::now();

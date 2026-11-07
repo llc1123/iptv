@@ -14,36 +14,71 @@ pub fn rewrite_playlist(
     tokens: &TokenStore,
 ) -> Result<PlaylistRewrite, super::tokens::TokenStoreError> {
     let text = String::from_utf8_lossy(body);
-    let mut output = String::new();
-    let mut resources = Vec::new();
+    let mut lines = Vec::new();
+    let mut pending = Vec::new();
     for line in text.lines() {
         if line.starts_with('#') {
             let mut rewritten = String::with_capacity(line.len());
-            let mut rest = line;
-            while let Some(start) = rest.find("URI=\"") {
-                let value_start = start + 5;
-                let Some(end_offset) = rest[value_start..].find('"') else {
-                    rewritten.push_str(rest);
+            let mut cursor = 0;
+            let mut copied = 0;
+            let bytes = line.as_bytes();
+            while cursor + 5 <= bytes.len() {
+                if &bytes[cursor..cursor + 5] != b"URI=\"" {
+                    cursor += 1;
+                    continue;
+                }
+                let value_start = cursor + 5;
+                let mut end = value_start;
+                while end < bytes.len() && bytes[end] != b'"' {
+                    end += 1;
+                }
+                if end == bytes.len() {
                     break;
-                };
-                let end = value_start + end_offset;
-                rewritten.push_str(&rest[..value_start]);
-                let resource = register_uri(tokens, base_url, &rest[value_start..end], "")?;
-                rewritten.push_str("/_hls/");
-                rewritten.push_str(&resource.token);
-                resources.push(resource);
-                rest = &rest[end..];
+                }
+                rewritten.push_str(&line[copied..value_start]);
+                let index = pending.len();
+                pending.push(resource_value(base_url, &line[value_start..end], "")?);
+                rewritten.push('\0');
+                rewritten.push_str(&index.to_string());
+                rewritten.push('\0');
+                cursor = end + 1;
+                copied = cursor;
             }
-            if !rest.is_empty() && !rewritten.ends_with(rest) {
-                rewritten.push_str(rest);
-            }
-            output.push_str(&rewritten);
+            rewritten.push_str(&line[copied..]);
+            lines.push(rewritten);
         } else if !line.trim().is_empty() {
-            let resource = register_uri(tokens, base_url, line.trim(), ".ts")?;
+            let index = pending.len();
+            pending.push(resource_value(base_url, line.trim(), ".ts")?);
+            lines.push(format!("\u{0}{index}\u{0}"));
+        } else {
+            lines.push(String::new());
+        }
+        if lines.iter().map(String::len).sum::<usize>() > PLAYLIST_MAX_BYTES {
+            return Err(super::tokens::TokenStoreError::Capacity);
+        }
+    }
+    let resources = tokens.register_batch(&pending)?;
+    let mut output = String::new();
+    for line in lines {
+        let mut cursor = 0;
+        while let Some(start) = line[cursor..].find('\0') {
+            let start = cursor + start;
+            let Some(end_offset) = line[start + 1..].find('\0') else {
+                break;
+            };
+            let end = start + 1 + end_offset;
+            output.push_str(&line[cursor..start]);
+            let index = line[start + 1..end]
+                .parse::<usize>()
+                .map_err(|_| super::tokens::TokenStoreError::Invalid)?;
+            let resource = resources
+                .get(index)
+                .ok_or(super::tokens::TokenStoreError::Invalid)?;
             output.push_str("/_hls/");
             output.push_str(&resource.token);
-            resources.push(resource);
+            cursor = end + 1;
         }
+        output.push_str(&line[cursor..]);
         output.push('\n');
         if output.len() > PLAYLIST_MAX_BYTES {
             return Err(super::tokens::TokenStoreError::Capacity);
@@ -55,18 +90,17 @@ pub fn rewrite_playlist(
     })
 }
 
-fn register_uri(
-    tokens: &TokenStore,
+fn resource_value(
     base: &Url,
     value: &str,
     default: &str,
-) -> Result<Resource, super::tokens::TokenStoreError> {
+) -> Result<(String, String), super::tokens::TokenStoreError> {
     let mut url = base
         .join(value)
         .map_err(|_| super::tokens::TokenStoreError::Invalid)?;
     url.set_fragment(None);
     let suffix = resource_suffix(&url, default);
-    tokens.register(url.to_string(), &suffix)
+    Ok((url.to_string(), suffix))
 }
 
 fn resource_suffix(url: &Url, default: &str) -> String {

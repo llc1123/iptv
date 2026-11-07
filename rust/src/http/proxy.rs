@@ -12,7 +12,7 @@ use reqwest::Url;
 pub(crate) async fn forward(state: &AppState, request: Request, url: String) -> Response {
     let Ok(url) = Url::parse(&url) else {
         tracing::warn!("upstream HLS URL was invalid");
-        return RequestError::Hls.into_response();
+        return RequestError::new("hls-proxy", "invalid upstream URL").into_response();
     };
     let mut builder = state.epg.http_client().get(url);
     for name in [header::ACCEPT, header::RANGE, header::USER_AGENT] {
@@ -24,12 +24,13 @@ pub(crate) async fn forward(state: &AppState, request: Request, url: String) -> 
         Ok(response) => response,
         Err(error) => {
             tracing::warn!(error = %error.without_url(), "upstream HLS request failed");
-            return RequestError::Hls.into_response();
+            return RequestError::new("hls-proxy", "upstream request failed").into_response();
         }
     };
     if !response.status().is_success() {
         tracing::warn!(status = %response.status(), "upstream HLS returned failure status");
-        return RequestError::Hls.into_response();
+        return RequestError::new("hls-proxy", "upstream request returned failure status")
+            .into_response();
     }
     let final_url = response.url().clone();
     let content_type = response
@@ -41,22 +42,22 @@ pub(crate) async fn forward(state: &AppState, request: Request, url: String) -> 
     if final_url.path().to_ascii_lowercase().ends_with(".m3u8")
         || content_type.to_ascii_lowercase().contains("mpegurl")
     {
-        let bytes = match response.bytes().await {
-            Ok(bytes) if bytes.len() <= 4 * 1024 * 1024 => bytes,
-            Ok(_) => {
+        let bytes = match read_playlist(response).await {
+            Ok(bytes) => bytes,
+            Err("size") => {
                 tracing::warn!("upstream HLS playlist exceeded size limit");
-                return RequestError::Hls.into_response();
+                return RequestError::new("hls-proxy", "playlist exceeds size limit")
+                    .into_response();
             }
-            Err(error) => {
-                tracing::warn!(error = %error.without_url(), "upstream HLS playlist read failed");
-                return RequestError::Hls.into_response();
+            Err("read" | _) => {
+                return RequestError::new("hls-proxy", "playlist read failed").into_response();
             }
         };
         let rewritten = match rewrite_playlist(&bytes, &final_url, &state.tokens) {
             Ok(value) => value.body,
             Err(error) => {
                 tracing::warn!(%error, "HLS playlist rewrite failed");
-                return RequestError::Hls.into_response();
+                return RequestError::new("hls-proxy", "playlist rewrite failed").into_response();
             }
         };
         return (
@@ -95,6 +96,26 @@ pub(crate) async fn forward(state: &AppState, request: Request, url: String) -> 
     (status, headers, body).into_response()
 }
 
+async fn read_playlist(mut response: reqwest::Response) -> Result<Vec<u8>, &'static str> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > 4 * 1024 * 1024)
+    {
+        return Err("size");
+    }
+    let mut bytes = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if bytes.len().saturating_add(chunk.len()) <= 4 * 1024 * 1024 => {
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(Some(_)) => return Err("size"),
+            Ok(None) => return Ok(bytes),
+            Err(_) => return Err("read"),
+        }
+    }
+}
+
 pub(crate) fn request_base(uri: &Uri, headers: &HeaderMap) -> Result<BaseUrl, ()> {
     let scheme = uri.scheme_str().unwrap_or("http");
     let host = headers
@@ -110,7 +131,11 @@ pub(crate) fn query_value(query: Option<&str>, wanted: &str) -> Option<String> {
         .filter_map(|pair| pair.split_once('='))
         .find_map(|(key, value)| {
             (decode_component(key).ok().as_deref() == Some(wanted))
-                .then(|| decode_component(value).ok())
+                .then(|| {
+                    decode_component(value)
+                        .ok()
+                        .filter(|value| !value.is_empty())
+                })
                 .flatten()
         })
 }
