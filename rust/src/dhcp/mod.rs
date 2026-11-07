@@ -7,7 +7,7 @@ pub mod packet;
 use thiserror::Error;
 
 pub use lease::{DhcpLease, LeaseError};
-pub use linux::{acquire_lease, configure_interface, ClientConfig, LinuxError};
+pub use linux::{ClientConfig, LinuxError, acquire_lease, configure_interface};
 pub use packet::{DhcpReply, MacAddress, PacketError, ReplyKind};
 
 #[derive(Debug, Error, PartialEq, Eq)]

@@ -1,4 +1,4 @@
-use dhcproto::{v4, Decodable};
+use dhcproto::{Decodable, v4};
 use etherparse::{IpHeaders, IpNumber, Ipv4Extensions, Ipv4Header, PacketBuilder};
 use std::{collections::HashMap, fmt, net::Ipv4Addr, str::FromStr};
 use thiserror::Error;

@@ -3,9 +3,8 @@
     reason = "Linux AF_PACKET and interface syscalls are isolated here"
 )]
 use super::{
-    lease,
+    DhcpError, lease,
     packet::{self, MacAddress, ReplyKind},
-    DhcpError,
 };
 use crate::crypto::ctc_option60::{self, Option60Input};
 use std::{
