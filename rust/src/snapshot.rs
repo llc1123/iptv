@@ -58,7 +58,9 @@ impl Snapshot {
         kind: RenderKind,
         base: &BaseUrl,
     ) -> Result<Arc<[u8]>, crate::render::RenderError> {
-        let key = (kind, base.as_str().to_owned());
+        // Feeds join paths onto the base without its trailing slashes, so
+        // those variants render identical bytes and share an entry.
+        let key = (kind, base.as_str().trim_end_matches('/').to_owned());
         if let Ok(cache) = self.rendered.lock() {
             if let Some(bytes) = cache.get(&key) {
                 return Ok(Arc::clone(bytes));
