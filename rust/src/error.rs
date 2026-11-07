@@ -16,8 +16,6 @@ pub enum RequestError {
     UnknownToken,
     #[error("unknown or unavailable channel logo")]
     UnknownLogo,
-    #[error("service is not ready")]
-    NotReady,
     #[error("EPG request failed")]
     Epg,
     #[error("channel has no replay")]
@@ -37,7 +35,7 @@ impl RequestError {
             | Self::UnknownToken
             | Self::UnknownLogo
             | Self::InvalidCatchup => StatusCode::NOT_FOUND,
-            Self::NotReady | Self::Epg | Self::NoReplay => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Epg | Self::NoReplay => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
 }
