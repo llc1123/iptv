@@ -1,218 +1,130 @@
-//! Policy-controlled HLS forwarding and backpressure-aware body streaming.
-
-use std::convert::Infallible;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::header::{CONTENT_ENCODING, CONTENT_TYPE};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
-use futures_util::stream;
+use axum::http::header::{ACCEPT_RANGES, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use reqwest::Url;
 
-use crate::hls::policy::{map_status, safe_response_headers};
-use crate::hls::{
-    HlsBody, HlsPolicy, HlsPolicyError, RequestHeaders, TokenStore, rewrite_playlist,
-};
-use crate::lifecycle::{CancellationToken, RequestGuard};
+use crate::hls::{RequestHeaders, TokenStore, rewrite_playlist};
 
 use super::{ForwardRequest, ForwardResponse, HlsForwarder, HlsFuture, HlsTarget, ProxyError};
 
-/// System DNS resolver used by the production HLS policy.
-#[derive(Debug, Default)]
-pub struct SystemResolver;
-
-impl crate::hls::Resolver for SystemResolver {
-    fn resolve(&self, host: &str, port: u16) -> crate::hls::policy::ResolveFuture {
-        let host = host.to_owned();
-        Box::pin(async move {
-            tokio::net::lookup_host((host, port))
-                .await
-                .map(Iterator::collect::<Vec<SocketAddr>>)
-                .map_err(|_| crate::hls::policy::ResolverError)
-        })
-    }
-}
-
-/// Production HLS forwarder backed by the configured policy and token store.
-pub struct PolicyForwarder<R> {
-    policy: Arc<HlsPolicy<R>>,
+pub struct PolicyForwarder {
+    client: reqwest::Client,
     tokens: Arc<TokenStore>,
 }
 
-impl<R> std::fmt::Debug for PolicyForwarder<R> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("PolicyForwarder([redacted])")
+impl std::fmt::Debug for PolicyForwarder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HlsForwarder([redacted])")
     }
 }
 
-impl<R: crate::hls::Resolver + 'static> PolicyForwarder<R> {
-    /// Creates a forwarder from an already validated policy and token store.
-    #[must_use]
-    pub fn new(policy: Arc<HlsPolicy<R>>, tokens: Arc<TokenStore>) -> Self {
-        Self { policy, tokens }
+impl PolicyForwarder {
+    pub fn new(tokens: Arc<TokenStore>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            tokens,
+        }
     }
 }
 
-impl<R: crate::hls::Resolver + 'static> HlsForwarder for PolicyForwarder<R> {
+impl HlsForwarder for PolicyForwarder {
     fn forward(&self, request: ForwardRequest) -> HlsFuture<'_> {
         Box::pin(async move {
             let url = match request.target {
                 HlsTarget::Url(url) => url,
-                HlsTarget::Token(token) => self
-                    .tokens
-                    .resolve(&token)
-                    .map_err(|_| ProxyError::Unavailable)
-                    .and_then(|resource| {
-                        Url::parse(&resource.url).map_err(|_| ProxyError::Unavailable)
-                    })?,
+                HlsTarget::Token(token) => Url::parse(
+                    &self
+                        .tokens
+                        .resolve(&token)
+                        .map_err(|_| ProxyError::Unavailable)?
+                        .url,
+                )
+                .map_err(|_| ProxyError::Unavailable)?,
             };
-            let response = self
-                .policy
-                .get(url, &request.headers, &request.cancellation)
+            let mut builder = self.client.get(url);
+            builder = copy_request_headers(builder, &request.headers);
+            let response = builder.send().await.map_err(|_| ProxyError::Unavailable)?;
+            let status = response.status();
+            if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
+                return Err(ProxyError::Unavailable);
+            }
+            let final_url = response.url().clone();
+            let headers = response.headers().clone();
+            if is_playlist(&final_url, &headers) {
+                let bytes = response
+                    .bytes()
+                    .await
+                    .map_err(|_| ProxyError::Unavailable)?;
+                if bytes.len() > crate::hls::PLAYLIST_MAX_BYTES {
+                    return Err(ProxyError::Unavailable);
+                }
+                let rewritten =
+                    rewrite_playlist(&bytes, &final_url, &request.cancellation, &self.tokens)
+                        .map_err(|_| ProxyError::Unavailable)?;
+                let mut output = HeaderMap::new();
+                output.insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("application/vnd.apple.mpegurl"),
+                );
+                insert_length(&mut output, rewritten.body.len());
+                return Ok(ForwardResponse {
+                    status,
+                    headers: output,
+                    body: Body::from(rewritten.body),
+                });
+            }
+            let mut output = narrow_headers(&headers);
+            if output
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.eq_ignore_ascii_case("video/mpeg"))
+            {
+                output.insert(CONTENT_TYPE, HeaderValue::from_static("video/mp2t"));
+            }
+            let bytes = response
+                .bytes()
                 .await
                 .map_err(|_| ProxyError::Unavailable)?;
-            build_response(
-                response,
-                request.headers,
-                request.cancellation,
-                request.admission,
-                &self.tokens,
-            )
-            .await
+            Ok(ForwardResponse {
+                status,
+                headers: output,
+                body: Body::from(bytes),
+            })
         })
     }
 }
 
-async fn build_response(
-    response: crate::hls::HlsResponse,
-    _request_headers: RequestHeaders,
-    cancellation: CancellationToken,
-    admission: Arc<RequestGuard>,
-    tokens: &TokenStore,
-) -> Result<ForwardResponse, ProxyError> {
-    let status = response.response.status();
-    map_status(status).map_err(|_| ProxyError::Unavailable)?;
-    if !matches!(status, StatusCode::OK | StatusCode::PARTIAL_CONTENT) {
-        return Err(ProxyError::Unavailable);
+fn copy_request_headers(
+    mut builder: reqwest::RequestBuilder,
+    headers: &RequestHeaders,
+) -> reqwest::RequestBuilder {
+    if let Some(value) = &headers.accept {
+        builder = builder.header("accept", value);
     }
-    let final_url = response.response.url().clone();
-    let upstream_headers = response.response.headers().clone();
-    let playlist = is_playlist(&final_url, &upstream_headers);
-    if playlist {
-        if upstream_headers.contains_key(CONTENT_ENCODING)
-            || upstream_headers
-                .get(reqwest::header::CONTENT_LENGTH)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<u64>().ok())
-                .is_some_and(|length| length > crate::hls::PLAYLIST_MAX_BYTES as u64)
-        {
-            return Err(ProxyError::Unavailable);
-        }
-        let mut body = response.into_body();
-        let mut bytes = Vec::new();
-        loop {
-            let chunk = tokio::select! {
-                () = cancellation.cancelled() => return Err(ProxyError::Unavailable),
-                chunk = body.next_chunk() => chunk.map_err(|_| ProxyError::Unavailable)?,
-            };
-            let Some(chunk) = chunk else {
-                break;
-            };
-            let next_length = bytes
-                .len()
-                .checked_add(chunk.len())
-                .ok_or(ProxyError::Unavailable)?;
-            if next_length > crate::hls::PLAYLIST_MAX_BYTES {
-                return Err(ProxyError::Unavailable);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-        let rewritten = rewrite_playlist(&bytes, &final_url, &cancellation, tokens)
-            .map_err(|_| ProxyError::Unavailable)?;
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            CONTENT_TYPE,
-            HeaderValue::from_static("application/vnd.apple.mpegurl"),
-        );
-        insert_length(&mut headers, rewritten.body.len());
-        return Ok(ForwardResponse {
-            status,
-            headers,
-            body: Body::from(rewritten.body),
-        });
+    if let Some(value) = &headers.range {
+        builder = builder.header("range", value);
     }
-
-    let mut headers = narrow_headers(&upstream_headers);
-    if headers
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.eq_ignore_ascii_case("video/mpeg"))
-    {
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("video/mp2t"));
+    if let Some(value) = &headers.user_agent {
+        builder = builder.header("user-agent", value);
     }
-    let body = response.into_body();
-    let stream = media_stream(body, cancellation, admission);
-    Ok(ForwardResponse {
-        status,
-        headers,
-        body: Body::from_stream(stream),
-    })
-}
-
-struct MediaState {
-    body: HlsBody,
-    cancellation: CancellationToken,
-    _admission: Arc<RequestGuard>,
-}
-
-fn media_stream(
-    body: HlsBody,
-    cancellation: CancellationToken,
-    admission: Arc<RequestGuard>,
-) -> impl futures_util::Stream<Item = Result<Vec<u8>, Infallible>> + Send {
-    stream::unfold(
-        MediaState {
-            body,
-            cancellation,
-            _admission: admission,
-        },
-        |mut state| async move {
-            let next = tokio::select! {
-                () = state.cancellation.cancelled() => None,
-                chunk = state.body.next_chunk() => chunk.ok().flatten(),
-            }?;
-            Some((Ok(next), state))
-        },
-    )
+    builder
 }
 
 fn is_playlist(url: &Url, headers: &reqwest::header::HeaderMap) -> bool {
-    let path_match = url.path().to_ascii_lowercase().ends_with(".m3u8");
-    let mime_match = headers
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            let value = value.to_ascii_lowercase();
-            value.contains("mpegurl") || value.contains("x-mpegurl")
-        });
-    path_match || mime_match
+    url.path().to_ascii_lowercase().ends_with(".m3u8")
+        || headers
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.to_ascii_lowercase().contains("mpegurl"))
 }
 
 fn narrow_headers(source: &reqwest::header::HeaderMap) -> HeaderMap {
-    let safe = safe_response_headers(source);
     let mut output = HeaderMap::new();
-    for name in [
-        "content-type",
-        "content-length",
-        "content-range",
-        "accept-ranges",
-        "content-encoding",
-    ] {
-        if let Some(value) = safe.get(name) {
-            if let Ok(header_name) = HeaderName::from_bytes(name.as_bytes()) {
-                output.insert(header_name, value.clone());
-            }
+    for name in [CONTENT_TYPE, CONTENT_LENGTH, CONTENT_RANGE, ACCEPT_RANGES] {
+        if let Some(value) = source.get(&name) {
+            output.insert(name, value.clone());
         }
     }
     output
@@ -220,12 +132,6 @@ fn narrow_headers(source: &reqwest::header::HeaderMap) -> HeaderMap {
 
 fn insert_length(headers: &mut HeaderMap, length: usize) {
     if let Ok(value) = HeaderValue::from_str(&length.to_string()) {
-        headers.insert(axum::http::header::CONTENT_LENGTH, value);
-    }
-}
-
-impl From<HlsPolicyError> for ProxyError {
-    fn from(_: HlsPolicyError) -> Self {
-        Self::Unavailable
+        headers.insert(CONTENT_LENGTH, value);
     }
 }
