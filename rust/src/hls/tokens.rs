@@ -6,7 +6,7 @@ use std::{
 };
 
 const TTL: Duration = Duration::from_secs(300);
-const CAPACITY: usize = 10_000;
+pub(crate) const CAPACITY: usize = 10_000;
 const URL_MAX_BYTES: usize = 8 * 1024;
 const STORED_BYTES: usize = 64 * 1024 * 1024;
 
@@ -31,19 +31,64 @@ impl std::error::Error for TokenStoreError {}
 
 struct Entry {
     url: String,
+    suffix: String,
     expires_at: Instant,
 }
-pub struct TokenStore {
-    entries: Mutex<HashMap<String, Entry>>,
-    stored_bytes: Mutex<usize>,
+
+#[derive(Default)]
+struct Entries {
+    by_token: HashMap<String, Entry>,
+    by_url: HashMap<(String, String), String>,
+    stored_bytes: usize,
 }
-impl Default for TokenStore {
-    fn default() -> Self {
-        Self {
-            entries: Mutex::new(HashMap::new()),
-            stored_bytes: Mutex::new(0),
+
+impl Entries {
+    fn remove(&mut self, token: &str) {
+        if let Some(entry) = self.by_token.remove(token) {
+            self.stored_bytes -= entry.url.len();
+            self.by_url.remove(&(entry.url, entry.suffix));
         }
     }
+
+    fn prune(&mut self, now: Instant) {
+        let expired = self
+            .by_token
+            .iter()
+            .filter(|(_, entry)| entry.expires_at <= now)
+            .map(|(token, _)| token.clone())
+            .collect::<Vec<_>>();
+        for token in expired {
+            self.remove(&token);
+        }
+    }
+
+    /// Evicts the soonest-expiring entries until `entries` more entries holding
+    /// `bytes` more URL bytes fit.
+    fn make_room(&mut self, entries: usize, bytes: usize) {
+        let over = |store: &Self| {
+            store.by_token.len() + entries > CAPACITY || store.stored_bytes + bytes > STORED_BYTES
+        };
+        if !over(self) {
+            return;
+        }
+        let mut oldest = self
+            .by_token
+            .iter()
+            .map(|(token, entry)| (entry.expires_at, token.clone()))
+            .collect::<Vec<_>>();
+        oldest.sort_unstable();
+        for (_, token) in oldest {
+            if !over(self) {
+                break;
+            }
+            self.remove(&token);
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct TokenStore {
+    entries: Mutex<Entries>,
 }
 
 impl TokenStore {
@@ -60,6 +105,9 @@ impl TokenStore {
             .ok_or(TokenStoreError::Unavailable)
     }
 
+    /// Registers every `(url, suffix)` pair or none of them. A URL that is
+    /// still registered with the same suffix keeps its token, so repeated
+    /// fetches of a live playlist only add its new segments.
     pub fn register_batch(
         &self,
         values: &[(String, String)],
@@ -74,7 +122,11 @@ impl TokenStore {
         }) {
             return Err(TokenStoreError::Invalid);
         }
-        let tokens = values
+        let new_bytes = values.iter().map(|(url, _)| url.len()).sum::<usize>();
+        if values.len() > CAPACITY || new_bytes > STORED_BYTES {
+            return Err(TokenStoreError::Capacity);
+        }
+        let fresh = values
             .iter()
             .map(|(_, suffix)| Ok(format!("{}{}", random_token()?, suffix)))
             .collect::<Result<Vec<_>, TokenStoreError>>()?;
@@ -83,46 +135,50 @@ impl TokenStore {
             .entries
             .lock()
             .map_err(|_| TokenStoreError::Unavailable)?;
-        entries.retain(|_, entry| entry.expires_at > now);
-        let mut stored_bytes = self
-            .stored_bytes
-            .lock()
-            .map_err(|_| TokenStoreError::Unavailable)?;
-        *stored_bytes = entries.values().map(|entry| entry.url.len()).sum();
-        if entries.len().saturating_add(values.len()) > CAPACITY
-            || stored_bytes.saturating_add(values.iter().map(|(url, _)| url.len()).sum())
-                > STORED_BYTES
-        {
-            return Err(TokenStoreError::Capacity);
-        }
-        let resources = values
+        entries.prune(now);
+        let missing = values
             .iter()
-            .zip(tokens)
-            .map(|((url, _), token)| {
-                entries.insert(
-                    token.clone(),
-                    Entry {
-                        url: url.clone(),
-                        expires_at: now + TTL,
-                    },
-                );
-                Ok(Resource {
-                    token,
+            .filter(|(url, suffix)| !entries.by_url.contains_key(&(url.clone(), suffix.clone())))
+            .map(|(url, _)| url.len())
+            .collect::<Vec<_>>();
+        entries.make_room(missing.len(), missing.iter().sum());
+        let mut resources = Vec::with_capacity(values.len());
+        for ((url, suffix), fresh) in values.iter().zip(fresh) {
+            let key = (url.clone(), suffix.clone());
+            let token = if let Some(token) = entries.by_url.get(&key) {
+                token.clone()
+            } else {
+                entries.stored_bytes += url.len();
+                entries.by_url.insert(key, fresh.clone());
+                fresh
+            };
+            entries.by_token.insert(
+                token.clone(),
+                Entry {
                     url: url.clone(),
-                })
-            })
-            .collect::<Result<Vec<_>, TokenStoreError>>()?;
-        *stored_bytes += values.iter().map(|(url, _)| url.len()).sum::<usize>();
+                    suffix: suffix.clone(),
+                    expires_at: now + TTL,
+                },
+            );
+            resources.push(Resource {
+                token,
+                url: url.clone(),
+            });
+        }
         Ok(resources)
     }
+
     pub fn resolve(&self, token: &str) -> Result<Resource, TokenStoreError> {
         let now = Instant::now();
         let mut entries = self
             .entries
             .lock()
             .map_err(|_| TokenStoreError::Unavailable)?;
-        entries.retain(|_, entry| entry.expires_at > now);
-        let entry = entries.get_mut(token).ok_or(TokenStoreError::Unavailable)?;
+        entries.prune(now);
+        let entry = entries
+            .by_token
+            .get_mut(token)
+            .ok_or(TokenStoreError::Unavailable)?;
         entry.expires_at = now + TTL;
         Ok(Resource {
             token: token.to_owned(),
@@ -180,7 +236,41 @@ mod tests {
             ]),
             Err(TokenStoreError::Invalid)
         );
-        assert_eq!(store.entries.lock().unwrap().len(), 1);
+        assert_eq!(store.entries.lock().unwrap().by_token.len(), 1);
         assert_eq!(store.resolve(&existing.token).unwrap().url, existing.url);
+    }
+
+    #[test]
+    fn live_urls_keep_their_token_and_suffix_variants_do_not_collide() {
+        let store = TokenStore::default();
+        let first = store.register("http://upstream.test/a", ".ts").unwrap();
+        let again = store.register("http://upstream.test/a", ".ts").unwrap();
+        let bare = store.register("http://upstream.test/a", "").unwrap();
+        assert_eq!(first.token, again.token);
+        assert_ne!(first.token, bare.token);
+        assert_eq!(store.entries.lock().unwrap().by_token.len(), 2);
+    }
+
+    #[test]
+    fn full_store_evicts_the_soonest_expiring_entries() {
+        let store = TokenStore::default();
+        let batch = |prefix: &str| {
+            (0..CAPACITY)
+                .map(|index| {
+                    (
+                        format!("http://upstream.test/{prefix}{index}"),
+                        String::new(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let old = store.register_batch(&batch("old")).unwrap();
+        let kept = store.resolve(&old[0].token).unwrap();
+        let new = store.register("http://upstream.test/new", ".ts").unwrap();
+        let entries = store.entries.lock().unwrap();
+        assert_eq!(entries.by_token.len(), CAPACITY);
+        assert_eq!(entries.by_url.len(), CAPACITY);
+        assert!(entries.by_token.contains_key(&kept.token));
+        assert!(entries.by_token.contains_key(&new.token));
     }
 }

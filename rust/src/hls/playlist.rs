@@ -18,6 +18,7 @@ pub fn rewrite_playlist(
         .replace('\r', "\n");
     let mut lines = Vec::new();
     let mut pending = Vec::new();
+    let mut rewritten_bytes = 0_usize;
     for line in text.lines() {
         if line.starts_with('#') {
             let mut rewritten = String::with_capacity(line.len());
@@ -55,7 +56,8 @@ pub fn rewrite_playlist(
         } else {
             lines.push(line.to_owned());
         }
-        if lines.iter().map(String::len).sum::<usize>() > PLAYLIST_MAX_BYTES {
+        rewritten_bytes += lines.last().map_or(0, String::len);
+        if rewritten_bytes > PLAYLIST_MAX_BYTES || pending.len() > super::tokens::CAPACITY {
             return Err(super::tokens::TokenStoreError::Capacity);
         }
     }
