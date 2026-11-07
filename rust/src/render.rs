@@ -21,7 +21,7 @@ mod render_base;
 pub use render_base::BaseUrl;
 
 /// The two independently cached feed formats.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RenderKind {
     /// M3U channel feed.
     M3u,
