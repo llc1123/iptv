@@ -101,6 +101,12 @@ until expiry. If the lease expires or the server hands out a different
 address, the process exits with status 1 so a supervisor such as the systemd
 unit below restarts it on the new lease.
 
+The provider answers many concurrent programme-window requests with HTTP 503;
+the Python server drops those windows (on the live service more than half of
+the guide). The Rust server retries them with backoff and lower concurrency
+before keeping the previous snapshot's programmes for any window that still
+fails.
+
 Prepare the host once, then run the offline gate:
 
 ```bash

@@ -18,6 +18,10 @@ pub struct RefreshCounts {
     pub guide_programmes: usize,
 }
 
+/// Concurrency for the first fetch of every window and for each retry round.
+const WINDOW_ROUNDS: [usize; 4] = [8, 4, 2, 2];
+const WINDOW_RETRY_DELAY: Duration = Duration::from_secs(1);
+
 pub type RefreshReply = oneshot::Sender<Result<RefreshCounts, RequestError>>;
 
 pub async fn refresh_once(
@@ -46,42 +50,79 @@ pub async fn refresh_once(
             })
         })
         .collect::<Vec<_>>();
-    let results = stream::iter(requests)
-        .map(|query| async move {
-            let result = client.programmes(&query).await;
-            (query, result)
-        })
-        .buffer_unordered(8)
-        .collect::<Vec<_>>()
-        .await;
-    let successful = results.iter().filter(|(_, result)| result.is_ok()).count();
-    if successful == 0 {
-        return Err(EpgError::Provider(
-            "all programme windows failed".to_owned(),
-        ));
-    }
+    let attempted = requests.len();
     let mut programmes = Vec::new();
-    for (query, result) in results {
-        match result {
-            Ok(items) => programmes.extend(items),
-            Err(error) => {
-                tracing::debug!(%error, channel_id = %query.channel_id, "programme window failed");
-                if let Some(previous) = previous {
-                    programmes.extend(
-                        previous
-                            .iter()
-                            .filter(|programme| {
-                                programme.channel_id == query.channel_id
-                                    && programme.start_time_ms < query.end_time_ms
-                                    && programme.end_time_ms > query.start_time_ms
-                            })
-                            .cloned(),
-                    );
+    let mut pending = requests;
+    let mut fetched = 0_usize;
+    // The provider sheds load with HTTP 503; failed windows are retried a few
+    // times with backoff and lower concurrency before falling back.
+    for (round, concurrency) in WINDOW_ROUNDS.iter().enumerate() {
+        if round > 0 {
+            if pending.is_empty() {
+                break;
+            }
+            time::sleep(WINDOW_RETRY_DELAY * u32::try_from(round).unwrap_or(u32::MAX)).await;
+        }
+        let results = stream::iter(pending)
+            .map(|query| async move {
+                let result = client.programmes(&query).await;
+                (query, result)
+            })
+            .buffer_unordered(*concurrency)
+            .collect::<Vec<_>>()
+            .await;
+        pending = Vec::new();
+        for (query, result) in results {
+            match result {
+                Ok(items) => {
+                    fetched += 1;
+                    programmes.extend(items);
+                }
+                Err(EpgError::Status(503)) => pending.push(query),
+                Err(error) => {
+                    tracing::debug!(%error, channel_id = %query.channel_id, "programme window failed");
+                    retain_previous(&mut programmes, previous, &query);
                 }
             }
         }
     }
+    if fetched == 0 {
+        return Err(EpgError::Provider(
+            "all programme windows failed".to_owned(),
+        ));
+    }
+    if !pending.is_empty() {
+        tracing::warn!(
+            failed = pending.len(),
+            attempted,
+            "programme windows still unavailable after retries"
+        );
+    }
+    for query in &pending {
+        retain_previous(&mut programmes, previous, query);
+    }
     Ok((channels, programmes))
+}
+
+/// Keeps the previous snapshot's programmes for a window that could not be
+/// fetched.
+fn retain_previous(
+    programmes: &mut Vec<Programme>,
+    previous: Option<&[Programme]>,
+    query: &ProgrammeQuery,
+) {
+    if let Some(previous) = previous {
+        programmes.extend(
+            previous
+                .iter()
+                .filter(|programme| {
+                    programme.channel_id == query.channel_id
+                        && programme.start_time_ms < query.end_time_ms
+                        && programme.end_time_ms > query.start_time_ms
+                })
+                .cloned(),
+        );
+    }
 }
 
 pub async fn run_loop(
