@@ -43,6 +43,8 @@ pub struct EpgConfig {
     pub stb_id: String,
     pub stb_mac: String,
     pub source_ip: IpAddr,
+    /// Interface the client's sockets are bound to (`SO_BINDTODEVICE`).
+    pub interface: Option<String>,
 }
 
 impl fmt::Debug for EpgConfig {
@@ -55,6 +57,7 @@ impl fmt::Debug for EpgConfig {
             .field("stb_id", &self.stb_id)
             .field("stb_mac", &self.stb_mac)
             .field("source_ip", &self.source_ip)
+            .field("interface", &self.interface)
             .finish()
     }
 }
@@ -114,7 +117,11 @@ impl EpgClient {
     /// # Errors
     /// Returns [`EpgError::Http`] when reqwest rejects the client configuration.
     pub fn new(config: EpgConfig) -> Result<Self, EpgError> {
-        let client = Client::builder()
+        let mut builder = Client::builder();
+        if let Some(interface) = &config.interface {
+            builder = builder.interface(interface);
+        }
+        let client = builder
             .cookie_store(true)
             .http1_only()
             .no_proxy()

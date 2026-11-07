@@ -80,6 +80,7 @@ pub async fn fixture() -> Fixture {
         stb_id: "stb".into(),
         stb_mac: "00:11:22:33:44:55".into(),
         source_ip: Ipv4Addr::LOCALHOST.into(),
+        interface: None,
     })
     .unwrap();
     let guide_cache_path = std::env::temp_dir().join(format!("iptv-guide-{}.json", address.port()));

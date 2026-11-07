@@ -77,8 +77,6 @@ pub struct Config {
     pub logo_dir: PathBuf,
     #[arg(long, default_value_t = 3600, value_parser = clap::value_parser!(u64).range(1..))]
     pub refresh_interval_seconds: u64,
-    #[arg(long = "route", value_name = "CIDR[,via=IP][,src=IP]")]
-    pub routes: Vec<String>,
 }
 
 impl Config {

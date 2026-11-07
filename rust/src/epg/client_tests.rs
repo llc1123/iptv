@@ -130,6 +130,7 @@ fn client(provider: &Provider) -> EpgClient {
         stb_id: "stb".to_owned(),
         stb_mac: "00:11:22:33:44:55".to_owned(),
         source_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        interface: None,
     })
     .expect("client")
 }

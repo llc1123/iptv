@@ -20,11 +20,6 @@ use thiserror::Error;
 const STAGE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How often a quiet receive wakes up to check the deadline.
 const RECEIVE_POLL: Duration = Duration::from_secs(1);
-/// Routes to the provider's networks when none are configured, as in Python.
-const DEFAULT_ROUTES: [(Ipv4Addr, u8); 2] = [
-    (Ipv4Addr::new(10, 223, 0, 0), 16),
-    (Ipv4Addr::new(20, 248, 0, 0), 13),
-];
 static OPTION60_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
 #[derive(Clone)]
@@ -57,8 +52,6 @@ pub enum LinuxError {
     /// The failing interface change and the kernel's error.
     #[error("interface setup failed: {0}")]
     Netlink(String),
-    #[error("DHCP route override is invalid")]
-    InvalidRoute,
 }
 
 /// Runs the DISCOVER/OFFER/REQUEST/ACK exchange on `interface`.
@@ -101,41 +94,77 @@ pub fn acquire_lease(
     Ok((lease::from_ack(ack, acquired_at)?, mac))
 }
 
-/// Assigns the leased address and the provider routes to `interface`, like
-/// `ip addr replace` and `ip route replace ... via ... dev ... src ...`.
-pub fn configure_interface(
-    interface: &str,
-    lease: &DhcpLease,
-    routes: &[String],
-) -> Result<(), DhcpError> {
-    let routes = lease_routes(lease, routes)?;
+/// Policy routing table for traffic sourced from the lease address. Only
+/// that traffic reaches it, so the IPTV network never mixes with the host's
+/// routes, even when their subnets overlap. ("IPTV" on a phone keypad.)
+pub const ROUTE_TABLE: u32 = 4788;
+/// Priority of the `from <lease address> lookup ROUTE_TABLE` rule; it must
+/// come before the main table (32766).
+pub const RULE_PRIORITY: u32 = 4788;
+
+/// Puts the lease on `interface` without touching the main routing table:
+/// the address is added without its prefix route, and the subnet plus a
+/// default route via the lease's router go into [`ROUTE_TABLE`], selected by
+/// a rule for the lease address. Sockets bound to that address (the EPG and
+/// HLS clients) use the IPTV network; nothing else does.
+pub fn configure_interface(interface: &str, lease: &DhcpLease) -> Result<(), DhcpError> {
     let index = find_interface(interface)?.index;
     let mut netlink = Netlink::open()?;
     let address = format!("{}/{}", lease.address, lease.prefix_length());
     netlink
-        .request(RTM_NEWADDR, NLM_F_REPLACE, &address_message(index, lease))
+        .request(
+            RTM_NEWADDR,
+            NLM_F_REPLACE,
+            &address_message(index, lease, true),
+        )
         .map_err(|error| LinuxError::Netlink(format!("add {address}: {error}")))?;
-    for route in routes {
+    let mask = u32::from(lease.subnet_mask);
+    let subnet = Ipv4Addr::from(u32::from(lease.address) & mask);
+    for (destination, prefix, gateway) in [
+        (subnet, lease.prefix_length(), None),
+        (Ipv4Addr::UNSPECIFIED, 0, Some(lease.router)),
+    ] {
+        let route = route_message(index, lease.address, destination, prefix, gateway);
         netlink
-            .request(RTM_NEWROUTE, NLM_F_REPLACE, &route_message(index, &route))
+            .request(RTM_NEWROUTE, NLM_F_REPLACE, &route)
             .map_err(|error| {
-                LinuxError::Netlink(format!(
-                    "route {}/{}: {error}",
-                    route.destination, route.prefix
-                ))
+                LinuxError::Netlink(format!("route {destination}/{prefix}: {error}"))
             })?;
     }
+    remove_rules(&mut netlink)?;
+    netlink
+        .request(
+            RTM_NEWRULE,
+            NLM_F_CREATE,
+            &rule_message(Some(lease.address)),
+        )
+        .map_err(|error| LinuxError::Netlink(format!("rule from {}: {error}", lease.address)))?;
     Ok(())
 }
 
-/// Removes a lease's address from the interface, e.g. after the server handed
-/// out a different one on renewal.
+/// Removes a lease's address, its routes (the kernel drops routes whose
+/// source it was) and the routing rule, e.g. after the server handed out a
+/// different address on renewal.
 pub fn remove_address(interface: &str, lease: &DhcpLease) -> Result<(), DhcpError> {
     let index = find_interface(interface)?.index;
-    Netlink::open()?
-        .request(RTM_DELADDR, 0, &address_message(index, lease))
+    let mut netlink = Netlink::open()?;
+    remove_rules(&mut netlink)?;
+    netlink
+        .request(RTM_DELADDR, 0, &address_message(index, lease, false))
         .map_err(|error| LinuxError::Netlink(format!("delete {}: {error}", lease.address)))?;
     Ok(())
+}
+
+/// Deletes every rule at [`RULE_PRIORITY`] for [`ROUTE_TABLE`], including
+/// ones left by an earlier run, so restarts do not stack duplicates.
+fn remove_rules(netlink: &mut Netlink) -> Result<(), LinuxError> {
+    loop {
+        match netlink.request(RTM_DELRULE, 0, &rule_message(None)) {
+            Ok(()) => {}
+            Err(error) if error.raw_os_error() == Some(ENOENT) => return Ok(()),
+            Err(error) => return Err(LinuxError::Netlink(format!("delete rule: {error}"))),
+        }
+    }
 }
 
 fn find_interface(name: &str) -> Result<NetworkInterface, LinuxError> {
@@ -145,84 +174,38 @@ fn find_interface(name: &str) -> Result<NetworkInterface, LinuxError> {
         .ok_or_else(|| LinuxError::Io(format!("interface {name} not found")))
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct Route {
-    destination: Ipv4Addr,
-    prefix: u8,
-    gateway: Option<Ipv4Addr>,
-    source: Option<Ipv4Addr>,
-}
-
-/// The configured routes (`CIDR[,via=IP][,src=IP]`), or the provider
-/// defaults; a route naming neither gateway nor source uses the lease's.
-fn lease_routes(lease: &DhcpLease, routes: &[String]) -> Result<Vec<Route>, LinuxError> {
-    let via_lease = |destination, prefix| Route {
-        destination,
-        prefix,
-        gateway: Some(lease.router),
-        source: Some(lease.address),
-    };
-    if routes.is_empty() {
-        return Ok(DEFAULT_ROUTES
-            .iter()
-            .map(|&(destination, prefix)| via_lease(destination, prefix))
-            .collect());
-    }
-    routes
-        .iter()
-        .map(|value| {
-            let mut parts = value.split(',');
-            let (destination, prefix) = parts
-                .next()
-                .and_then(|cidr| cidr.split_once('/'))
-                .and_then(|(address, prefix)| Some((address.parse().ok()?, prefix.parse().ok()?)))
-                .filter(|&(_, prefix): &(Ipv4Addr, u8)| prefix <= 32)
-                .ok_or(LinuxError::InvalidRoute)?;
-            let mut route = Route {
-                destination,
-                prefix,
-                gateway: None,
-                source: None,
-            };
-            for part in parts {
-                let (key, address) = part.split_once('=').ok_or(LinuxError::InvalidRoute)?;
-                let address = Some(address.parse().map_err(|_| LinuxError::InvalidRoute)?);
-                match key {
-                    "via" => route.gateway = address,
-                    "src" => route.source = address,
-                    _ => return Err(LinuxError::InvalidRoute),
-                }
-            }
-            if route.gateway.is_none() && route.source.is_none() {
-                route = via_lease(destination, prefix);
-            }
-            Ok(route)
-        })
-        .collect()
-}
-
 const RTM_NEWADDR: u16 = 20;
 const RTM_DELADDR: u16 = 21;
 const RTM_NEWROUTE: u16 = 24;
+const RTM_NEWRULE: u16 = 32;
+const RTM_DELRULE: u16 = 33;
 const NLMSG_ERROR: u16 = 2;
 const NLM_F_REQUEST: u16 = 0x1;
 const NLM_F_ACK: u16 = 0x4;
+const NLM_F_CREATE: u16 = 0x400;
 /// `NLM_F_REPLACE | NLM_F_CREATE`: what `ip ... replace` sends.
-const NLM_F_REPLACE: u16 = 0x100 | 0x400;
+const NLM_F_REPLACE: u16 = 0x100 | NLM_F_CREATE;
+const ENOENT: i32 = 2;
 const AF_INET: u8 = 2;
 const IFA_ADDRESS: u16 = 1;
 const IFA_LOCAL: u16 = 2;
+const IFA_FLAGS: u16 = 8;
+const IFA_F_NOPREFIXROUTE: u32 = 0x200;
 const RTA_DST: u16 = 1;
 const RTA_OIF: u16 = 4;
 const RTA_GATEWAY: u16 = 5;
 const RTA_PREFSRC: u16 = 7;
-const RT_TABLE_MAIN: u8 = 254;
+const RTA_TABLE: u16 = 15;
+const FRA_SRC: u16 = 2;
+const FRA_PRIORITY: u16 = 6;
+const FRA_TABLE: u16 = 15;
+const FR_ACT_TO_TBL: u8 = 1;
 const RTPROT_BOOT: u8 = 3;
 const RT_SCOPE_UNIVERSE: u8 = 0;
 const RT_SCOPE_LINK: u8 = 253;
 const RTN_UNICAST: u8 = 1;
 
-/// Appends a 4-byte route attribute (`struct rtattr` plus payload).
+/// Appends a 4-byte netlink attribute (`struct rtattr` plus payload).
 fn attribute(message: &mut Vec<u8>, kind: u16, value: [u8; 4]) {
     message.extend_from_slice(&8_u16.to_ne_bytes());
     message.extend_from_slice(&kind.to_ne_bytes());
@@ -230,44 +213,59 @@ fn attribute(message: &mut Vec<u8>, kind: u16, value: [u8; 4]) {
 }
 
 /// `struct ifaddrmsg` and its attributes for the lease's address.
-fn address_message(index: u32, lease: &DhcpLease) -> Vec<u8> {
+fn address_message(index: u32, lease: &DhcpLease, no_prefix_route: bool) -> Vec<u8> {
     let prefix = u8::try_from(lease.prefix_length()).unwrap_or(32);
     let mut message = vec![AF_INET, prefix, 0, RT_SCOPE_UNIVERSE];
     message.extend_from_slice(&index.to_ne_bytes());
     attribute(&mut message, IFA_LOCAL, lease.address.octets());
     attribute(&mut message, IFA_ADDRESS, lease.address.octets());
+    if no_prefix_route {
+        attribute(&mut message, IFA_FLAGS, IFA_F_NOPREFIXROUTE.to_ne_bytes());
+    }
     message
 }
 
-/// `struct rtmsg` and its attributes for a main-table unicast route.
-fn route_message(index: u32, route: &Route) -> Vec<u8> {
-    let mut message = vec![
-        AF_INET,
-        route.prefix,
-        0,
-        0,
-        RT_TABLE_MAIN,
-        RTPROT_BOOT,
-        // A route without a gateway is directly connected, as `ip` infers.
-        if route.gateway.is_some() {
-            RT_SCOPE_UNIVERSE
-        } else {
-            RT_SCOPE_LINK
-        },
-        RTN_UNICAST,
-        0,
-        0,
-        0,
-        0,
-    ];
-    attribute(&mut message, RTA_DST, route.destination.octets());
-    if let Some(gateway) = route.gateway {
+/// `struct rtmsg` and its attributes for a unicast route in [`ROUTE_TABLE`];
+/// a route without a gateway is directly connected, as `ip` infers.
+fn route_message(
+    index: u32,
+    source: Ipv4Addr,
+    destination: Ipv4Addr,
+    prefix: u32,
+    gateway: Option<Ipv4Addr>,
+) -> Vec<u8> {
+    let scope = if gateway.is_some() {
+        RT_SCOPE_UNIVERSE
+    } else {
+        RT_SCOPE_LINK
+    };
+    // The table travels in RTA_TABLE; the 8-bit header field stays unset.
+    let prefix = u8::try_from(prefix).unwrap_or(32);
+    let mut message = vec![AF_INET, prefix, 0, 0, 0, RTPROT_BOOT, scope, RTN_UNICAST];
+    message.extend_from_slice(&0_u32.to_ne_bytes());
+    attribute(&mut message, RTA_TABLE, ROUTE_TABLE.to_ne_bytes());
+    if prefix > 0 {
+        attribute(&mut message, RTA_DST, destination.octets());
+    }
+    if let Some(gateway) = gateway {
         attribute(&mut message, RTA_GATEWAY, gateway.octets());
     }
     attribute(&mut message, RTA_OIF, index.to_ne_bytes());
-    if let Some(source) = route.source {
-        attribute(&mut message, RTA_PREFSRC, source.octets());
+    attribute(&mut message, RTA_PREFSRC, source.octets());
+    message
+}
+
+/// `struct fib_rule_hdr` and its attributes for the [`ROUTE_TABLE`] rule;
+/// without a source it selects every such rule (for deletion).
+fn rule_message(source: Option<Ipv4Addr>) -> Vec<u8> {
+    let source_len = if source.is_some() { 32 } else { 0 };
+    let mut message = vec![AF_INET, 0, source_len, 0, 0, 0, 0, FR_ACT_TO_TBL];
+    message.extend_from_slice(&0_u32.to_ne_bytes());
+    if let Some(source) = source {
+        attribute(&mut message, FRA_SRC, source.octets());
     }
+    attribute(&mut message, FRA_PRIORITY, RULE_PRIORITY.to_ne_bytes());
+    attribute(&mut message, FRA_TABLE, ROUTE_TABLE.to_ne_bytes());
     message
 }
 
@@ -382,69 +380,4 @@ fn exchange(
         }
     }
     Err(LinuxError::Timeout.into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn route(
-        destination: [u8; 4],
-        prefix: u8,
-        gateway: Option<[u8; 4]>,
-        source: Option<[u8; 4]>,
-    ) -> Route {
-        Route {
-            destination: Ipv4Addr::from(destination),
-            prefix,
-            gateway: gateway.map(Ipv4Addr::from),
-            source: source.map(Ipv4Addr::from),
-        }
-    }
-
-    #[test]
-    fn default_routes_match_python() {
-        let lease = lease::test_lease();
-        let via = Some([192, 0, 2, 1]);
-        let src = Some([192, 0, 2, 44]);
-        assert_eq!(
-            lease_routes(&lease, &[]).unwrap(),
-            [
-                route([10, 223, 0, 0], 16, via, src),
-                route([20, 248, 0, 0], 13, via, src)
-            ]
-        );
-    }
-
-    #[test]
-    fn route_overrides_keep_given_fields_and_reject_unknown_keys() {
-        let lease = lease::test_lease();
-        let routes = [
-            "198.51.100.0/24".to_owned(),
-            "203.0.113.0/24,via=192.0.2.9".to_owned(),
-        ];
-        assert_eq!(
-            lease_routes(&lease, &routes).unwrap(),
-            [
-                route(
-                    [198, 51, 100, 0],
-                    24,
-                    Some([192, 0, 2, 1]),
-                    Some([192, 0, 2, 44])
-                ),
-                route([203, 0, 113, 0], 24, Some([192, 0, 2, 9]), None),
-            ]
-        );
-        for bad in [
-            "10.0.0.0/33",
-            "10.0.0.0",
-            "10.0.0.0/8,dev=eth0",
-            "10.0.0.0/8,via=x",
-        ] {
-            assert_eq!(
-                lease_routes(&lease, &[bad.to_owned()]),
-                Err(LinuxError::InvalidRoute)
-            );
-        }
-    }
 }

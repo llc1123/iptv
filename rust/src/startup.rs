@@ -96,7 +96,6 @@ async fn start(
     let dhcp_user = config.dhcp_user.as_str().to_owned();
     let dhcp_password = config.dhcp_password.as_str().to_owned();
     let prefix = config.stb_id_prefix.clone();
-    let routes = config.routes.clone();
     let renewal = Renewal {
         interface: interface.clone(),
         user: dhcp_user.clone(),
@@ -110,7 +109,7 @@ async fn start(
             stb_id_prefix: &prefix,
         };
         let (lease, mac) = acquire_lease(&interface, &client_config)?;
-        configure_interface(&interface, &lease, &routes)?;
+        configure_interface(&interface, &lease)?;
         Ok::<_, crate::dhcp::DhcpError>((lease, mac))
     })
     .await??;
@@ -122,6 +121,7 @@ async fn start(
         stb_id: config.stb_id.clone(),
         stb_mac: epg_mac(config.epg_mac.as_deref(), interface_mac),
         source_ip: IpAddr::V4(lease.address),
+        interface: Some(config.interface.clone()),
     })?;
     let guide_cache = GuideCache::new(config.guide_cache.clone());
     let cached = guide_cache.load();

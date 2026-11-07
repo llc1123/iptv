@@ -105,6 +105,15 @@ until expiry. If the lease expires or the server hands out a different
 address, the process exits with status 1 so a supervisor such as the systemd
 unit below restarts it on the new lease.
 
+The Rust server keeps the IPTV network out of the host's routing. The leased
+address is added without a prefix route, and its subnet and a default route
+via the lease's router go into routing table 4788, which only traffic from
+the leased address reaches (`ip rule` priority 4788, ahead of `main`). The EPG
+and HLS clients bind to that address and the interface, so they reach the
+provider whatever the host's own routes or overlapping subnets are, and the
+host's other traffic never enters the IPTV network. No provider subnets are
+assumed; the Python server instead adds fixed routes to the main table.
+
 The provider answers many concurrent programme-window requests with HTTP 503;
 the Python server drops those windows (on the live service more than half of
 the guide). The Rust server retries them with backoff and lower concurrency
