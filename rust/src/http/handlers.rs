@@ -10,6 +10,7 @@ use axum::http::header::{
 };
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use serde::Serialize;
 
 use crate::error::{AppError, RequestError};
 use crate::guide::parse_catchup_start;
@@ -27,15 +28,25 @@ const NO_CACHE: [(&str, &str); 3] = [
 const MAX_ROUTE_COMPONENT_BYTES: usize = 1024;
 const MAX_RAW_QUERY_BYTES: usize = 4096;
 
+#[derive(Serialize)]
+struct Health {
+    status: &'static str,
+    channels: u64,
+}
+
 /// Returns the health projection at the injected clock instant.
 pub async fn healthz(State(state): State<AppState>) -> Response {
     let (status, view) = state.health.response_at(state.clock.now()).await;
-    let status = if status == 200 {
+    let http_status = if status == 200 {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
-    (status, Json(view)).into_response()
+    let body = Health {
+        status: if view.ready { "ok" } else { "starting" },
+        channels: view.channels,
+    };
+    (http_status, Json(body)).into_response()
 }
 
 /// Renders the current M3U feed from one immutable snapshot.
@@ -327,7 +338,11 @@ pub fn error_response(error: AppError) -> Response {
         502 => StatusCode::BAD_GATEWAY,
         _ => StatusCode::SERVICE_UNAVAILABLE,
     };
-    (status, Json(error.response_body())).into_response()
+    (
+        status,
+        Json(serde_json::json!({ "error": error.to_string() })),
+    )
+        .into_response()
 }
 
 fn request_base(request: &Request) -> Result<BaseUrl, AppError> {
