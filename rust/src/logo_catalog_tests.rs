@@ -1,7 +1,3 @@
-#![expect(
-    clippy::expect_used,
-    reason = "temporary fixtures use fixed valid paths"
-)]
 
 use super::*;
 use std::fs;

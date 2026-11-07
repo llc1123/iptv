@@ -289,7 +289,6 @@ impl fmt::Display for GuideZone {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "unit fixtures use fixed valid values")]
 mod tests {
     use super::*;
 

@@ -1,4 +1,3 @@
-#![expect(clippy::expect_used, reason = "unit fixtures use fixed valid values")]
 
 use super::*;
 

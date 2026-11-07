@@ -1,8 +1,3 @@
-#![expect(
-    clippy::expect_used,
-    clippy::panic,
-    reason = "unit fixtures use fixed valid values"
-)]
 
 use super::*;
 

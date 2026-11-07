@@ -1,8 +1,4 @@
 #![doc = "Focused JSON parity tests for Python EPG model coercion."]
-#![expect(
-    clippy::expect_used,
-    reason = "parity tests use fixed valid JSON fixtures"
-)]
 
 use iptv_media_server::epg::{Programme, TvodAddress};
 use serde_json::{Value, json};

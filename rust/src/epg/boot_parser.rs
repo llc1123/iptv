@@ -229,10 +229,6 @@ pub fn parse_boot_channels(body: &str) -> Result<Vec<BootChannel>, BootParserErr
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    reason = "parser tests use fixed valid fixture inputs"
-)]
 mod tests {
     use super::{BootParserErrorKind, parse_boot_channels};
 
