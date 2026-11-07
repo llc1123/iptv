@@ -75,7 +75,22 @@ pub fn response_for(path: &str, request_body: &str, address: SocketAddr) -> Stri
         "/segment.ts" => "segment-bytes".into(),
         _ => String::new(),
     };
-    let status = if route == "/fail.m3u8" {
+    let status_line = if !route.contains("/EPG/")
+        && !route.contains("/EDS/")
+        && !matches!(
+            route,
+            "/EPG/jsp/authLoginHWCU.jsp"
+                | "/EPG/jsp/ValidAuthenticationHWCU.jsp"
+                | "/EPG/jsp/getchannellistHWCU.jsp"
+                | "/EPG/jsp/jkjiaoyutest/en/function/ajax/epg7getChannelByAjax.jsp"
+                | "/EPG/jsp/jkjiaoyutest/en/epg4ChannelPlayByAjax.jsp"
+                | "/live.m3u8"
+                | "/tvod.m3u8"
+                | "/segment.ts"
+                | "/fail.m3u8"
+        ) {
+        "404 Not Found"
+    } else if route == "/fail.m3u8" {
         "500 Internal Server Error"
     } else {
         "200 OK"
@@ -95,7 +110,7 @@ pub fn response_for(path: &str, request_body: &str, address: SocketAddr) -> Stri
         "text/plain"
     };
     format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     )
 }

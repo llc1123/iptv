@@ -19,7 +19,11 @@ async fn health_and_feeds_match_snapshot_rendering() {
     assert_eq!(health_body["status"], "ok");
     assert_eq!(health_body["channels"], 3);
     for (path, kind, content_type) in [
-        ("/channels.m3u", RenderKind::M3u, "audio/x-mpegurl"),
+        (
+            "/channels.m3u",
+            RenderKind::M3u,
+            "audio/x-mpegurl; charset=utf-8",
+        ),
         ("/xmltv.xml", RenderKind::Xmltv, "application/xml"),
     ] {
         let response = get(&fixture.app, &fixture.host, path).await;
@@ -96,23 +100,60 @@ async fn replay_and_catchup_accept_seconds_milliseconds_and_encoded_iso() {
             "{uri}"
         );
     }
+    assert_eq!(
+        get(
+            &fixture.app,
+            &fixture.host,
+            "/stream/channel?utc=1700000000"
+        )
+        .await
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(&fixture.app, &fixture.host, "/stream/channel.m3u8?utc=")
+            .await
+            .status(),
+        StatusCode::OK
+    );
     fixture.stop();
 }
 
 #[tokio::test]
 async fn errors_and_metadata_sync_are_reported_at_http_boundary() {
     let fixture = fixture().await;
+    let unknown = get(&fixture.app, &fixture.host, "/stream/unknown.m3u8").await;
+    assert_eq!(unknown.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
-        get(&fixture.app, &fixture.host, "/stream/unknown.m3u8")
+        to_bytes(unknown.into_body(), 1 << 20)
             .await
-            .status(),
-        StatusCode::NOT_FOUND
+            .unwrap()
+            .as_ref(),
+        br#"{"error":"service: unknown channel unknown"}"#
     );
     assert_eq!(
         get(&fixture.app, &fixture.host, "/_hls/unknown.ts")
             .await
             .status(),
-        StatusCode::NOT_FOUND
+        StatusCode::BAD_GATEWAY
+    );
+    let no_replay = get(&fixture.app, &fixture.host, "/stream/live.m3u8").await;
+    assert_eq!(no_replay.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        to_bytes(no_replay.into_body(), 1 << 20)
+            .await
+            .unwrap()
+            .as_ref(),
+        br#"{"error":"epg-tvod: channel live has no replay"}"#
+    );
+    let unknown_programme = get(&fixture.app, &fixture.host, "/replay/channel/missing.m3u8").await;
+    assert_eq!(unknown_programme.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        to_bytes(unknown_programme.into_body(), 1 << 20)
+            .await
+            .unwrap()
+            .as_ref(),
+        br#"{"error":"epg-replay: unknown programme missing"}"#
     );
     assert_eq!(
         get(&fixture.app, &fixture.host, "/stream/bad.m3u8")
@@ -131,12 +172,12 @@ async fn errors_and_metadata_sync_are_reported_at_http_boundary() {
         .unwrap()
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        to_bytes(response.into_body(), 1 << 20)
-            .await
-            .unwrap()
-            .as_ref(),
-        br#"{"channels":1,"guide_programmes":1}"#
-    );
+    let sync_body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
+    assert_eq!(sync_body["channels"], 1);
+    assert_eq!(sync_body["guide_programmes"], 1);
+    assert_eq!(sync_body["logos"], 0);
+    assert!(sync_body["catalog"].is_string());
+    assert!(sync_body["guide_cache"].is_string());
     fixture.stop();
 }

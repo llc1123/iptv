@@ -10,7 +10,7 @@ use iptv_media_server::{
     epg::{BootChannel, EpgClient, EpgConfig, Programme},
     guide::GuideZone,
     hls::TokenStore,
-    http::{AppState, ServiceControl, router},
+    http::{AppState, MetadataPaths, router},
     refresh,
     snapshot::Snapshot,
 };
@@ -30,9 +30,11 @@ pub struct Fixture {
     pub host: String,
     provider: tokio::task::JoinHandle<()>,
     refresh: tokio::task::JoinHandle<()>,
+    shutdown: watch::Sender<bool>,
 }
 impl Fixture {
     pub fn stop(self) {
+        let _ = self.shutdown.send(true);
         self.provider.abort();
         self.refresh.abort();
     }
@@ -110,9 +112,10 @@ pub async fn fixture() -> Fixture {
         Arc::new(TokenStore::default()),
         None,
         zone,
-        ServiceControl {
-            refresh: refresh_tx,
-            shutdown: shutdown_tx,
+        refresh_tx,
+        MetadataPaths {
+            catalog: String::new(),
+            guide_cache: String::new(),
         },
     ));
     Fixture {
@@ -121,6 +124,7 @@ pub async fn fixture() -> Fixture {
         host: address.to_string(),
         provider,
         refresh,
+        shutdown: shutdown_tx,
     }
 }
 
