@@ -158,6 +158,44 @@ pub enum PacketError {
     PacketTooLarge,
 }
 
+pub(crate) fn transaction_id(frame: &[u8]) -> Result<u32, PacketError> {
+    let (_, dhcp) = decode_udp(frame)?;
+    read_u32(dhcp, 4)
+}
+
+pub(crate) fn source_mac(frame: &[u8]) -> Result<MacAddress, PacketError> {
+    Ok(MacAddress::new(read_array(
+        frame,
+        ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + 28,
+    )?))
+}
+
+pub(crate) fn reply_kind_for_request(frame: &[u8]) -> Result<ReplyKind, PacketError> {
+    let (_, dhcp) = decode_udp(frame)?;
+    let options = parse_options(
+        dhcp.get(DHCP_MIN_PAYLOAD..)
+            .ok_or(PacketError::MalformedFrame)?,
+    )?;
+    match option_bytes(&options, 53)?.first() {
+        Some(1) => Ok(ReplyKind::Offer),
+        Some(3) => Ok(ReplyKind::Ack),
+        _ => Err(PacketError::UnexpectedMessageType),
+    }
+}
+
+pub(crate) fn matching_reply(
+    frame: &[u8],
+    xid: u32,
+    mac: MacAddress,
+    kind: ReplyKind,
+) -> Result<bool, PacketError> {
+    match decode_reply(frame, xid, mac, kind) {
+        Ok(_) => Ok(true),
+        Err(PacketError::Nak) => Err(PacketError::Nak),
+        Err(_) => Ok(false),
+    }
+}
+
 /// Builds the byte-compatible DHCPDISCOVER frame.
 pub fn build_discover(
     source: MacAddress,
@@ -758,5 +796,22 @@ mod tests {
             decoded.and_then(|reply| reply.server.ok_or(PacketError::MissingOption)),
             Ok(Ipv4Addr::new(192, 0, 2, 1))
         );
+    }
+
+    #[test]
+    fn matching_reply_skips_unrelated_frame_before_matching_reply() {
+        let lease = 3600_u32.to_be_bytes();
+        let fields = [
+            (53, &[5][..]),
+            (51, &lease[..]),
+            (125, &[0x10][..]),
+            (1, &[255, 255, 255, 0][..]),
+            (3, &[192, 0, 2, 1][..]),
+            (54, &[192, 0, 2, 1][..]),
+        ];
+        let unrelated = reply_frame(8, &fields);
+        let matching = reply_frame(7, &fields);
+        assert!(!matching_reply(&unrelated, 7, MAC, ReplyKind::Ack).unwrap_or(true));
+        assert!(matching_reply(&matching, 7, MAC, ReplyKind::Ack).unwrap_or(false));
     }
 }
