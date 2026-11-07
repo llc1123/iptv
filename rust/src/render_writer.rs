@@ -14,7 +14,6 @@ impl Writer {
             output: None,
         }
     }
-
     pub(super) fn output(limit: usize, capacity: usize) -> Result<Self, RenderError> {
         let mut output = Vec::new();
         output
@@ -26,11 +25,9 @@ impl Writer {
             output: Some(output),
         })
     }
-
-    pub(super) fn text(&mut self, text: &str, _line: bool) -> Result<(), RenderError> {
+    pub(super) fn text(&mut self, text: &str, _: bool) -> Result<(), RenderError> {
         self.bytes(text.as_bytes())
     }
-
     pub(super) fn line(&mut self, text: &str, newline: bool) -> Result<(), RenderError> {
         self.text(text, false)?;
         if newline {
@@ -38,7 +35,6 @@ impl Writer {
         }
         Ok(())
     }
-
     pub(super) fn bytes(&mut self, bytes: &[u8]) -> Result<(), RenderError> {
         self.count = self
             .count
@@ -55,7 +51,6 @@ impl Writer {
         }
         Ok(())
     }
-
     pub(super) fn finish(self) -> Result<Vec<u8>, RenderError> {
         self.output.ok_or(RenderError::CacheUnavailable)
     }
@@ -64,20 +59,17 @@ impl Writer {
 pub(super) fn validate_line_fields(
     channel: &crate::epg::models::BootChannel,
 ) -> Result<(), RenderError> {
-    [
+    for value in [
         &channel.channel_id,
         &channel.name,
         &channel.group_title,
         &channel.logo_url,
-    ]
-    .into_iter()
-    .try_for_each(|value| {
+    ] {
         if value.bytes().any(|byte| matches!(byte, b'\r' | b'\n' | 0)) {
-            Err(RenderError::InvalidField)
-        } else {
-            Ok(())
+            return Err(RenderError::InvalidField);
         }
-    })
+    }
+    Ok(())
 }
 
 pub(super) fn validate_xml_value(value: &str) -> Result<(), RenderError> {
@@ -89,17 +81,16 @@ pub(super) fn validate_xml_value(value: &str) -> Result<(), RenderError> {
 }
 
 pub(super) fn write_component(writer: &mut Writer, value: &str) -> Result<(), RenderError> {
-    for byte in value.as_bytes() {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for &byte in value.as_bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            writer.bytes(std::slice::from_ref(byte))?;
+            writer.bytes(&[byte])?;
         } else {
-            let digits = b"0123456789ABCDEF";
-            let encoded = [
+            writer.bytes(&[
                 b'%',
-                digits[usize::from(byte >> 4)],
-                digits[usize::from(byte & 0x0f)],
-            ];
-            writer.bytes(&encoded)?;
+                HEX[usize::from(byte >> 4)],
+                HEX[usize::from(byte & 15)],
+            ])?;
         }
     }
     Ok(())
@@ -107,28 +98,32 @@ pub(super) fn write_component(writer: &mut Writer, value: &str) -> Result<(), Re
 
 pub(super) fn xml_text(writer: &mut Writer, value: &str) -> Result<(), RenderError> {
     for character in value.chars() {
-        match character {
-            '&' => writer.text("&amp;", false)?,
-            '<' => writer.text("&lt;", false)?,
-            '>' => writer.text("&gt;", false)?,
-            _ => writer.text(character.encode_utf8(&mut [0; 4]), false)?,
-        }
+        let mut encoded = [0; 4];
+        let text = match character {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            _ => character.encode_utf8(&mut encoded),
+        };
+        writer.text(text, false)?;
     }
     Ok(())
 }
 
 pub(super) fn xml_attr(writer: &mut Writer, value: &str) -> Result<(), RenderError> {
     for character in value.chars() {
-        match character {
-            '&' => writer.text("&amp;", false)?,
-            '<' => writer.text("&lt;", false)?,
-            '>' => writer.text("&gt;", false)?,
-            '"' => writer.text("&quot;", false)?,
-            '\r' => writer.text("&#13;", false)?,
-            '\n' => writer.text("&#10;", false)?,
-            '\t' => writer.text("&#09;", false)?,
-            _ => writer.text(character.encode_utf8(&mut [0; 4]), false)?,
-        }
+        let mut encoded = [0; 4];
+        let text = match character {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '"' => "&quot;",
+            '\r' => "&#13;",
+            '\n' => "&#10;",
+            '\t' => "&#09;",
+            _ => character.encode_utf8(&mut encoded),
+        };
+        writer.text(text, false)?;
     }
     Ok(())
 }
