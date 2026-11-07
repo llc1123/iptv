@@ -13,7 +13,7 @@ use crate::dhcp::linux::{
 };
 use crate::dhcp::packet::{MacAddress, PacketError};
 use crate::dhcp::{DhcpError, LifecycleResult};
-use crate::epg::{EpgClient, EpgConfig, EpgErrorClass, EpgErrorStage};
+use crate::epg::{EpgClient, EpgConfig, EpgError};
 use crate::error::{AppError, StartupError};
 use crate::guide::{
     CacheFingerprint, GuideCache, GuideZone, SystemGuideClock, build_windows_from_clock,
@@ -26,9 +26,7 @@ use crate::http::{
 };
 use crate::lifecycle::{CancellationSource, CancellationToken, Lifecycle};
 use crate::logo_catalog::LogoCatalog;
-use crate::refresh::{
-    EpgMetadataSource, MetadataSource, RefreshEngine, RefreshEngineConfig, RefreshSupervisor,
-};
+use crate::refresh::{RefreshEngine, RefreshEngineConfig, RefreshSupervisor};
 use crate::snapshot::{Snapshot, SnapshotStore};
 
 const REFRESH_STOP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -151,40 +149,35 @@ async fn prepare_engine(
 ) -> Result<Prepared, AppError> {
     let (stb_id, effective_mac) =
         epg_identity(&config.stb_id, config.epg_mac.as_deref(), interface_mac);
-    let client = EpgClient::with_shutdown(
-        EpgConfig {
-            authentication_url: config.authentication_url.clone(),
-            user_id: config.epg_user.as_str().to_owned(),
-            password: config.epg_password.as_str().to_owned(),
-            stb_id,
-            stb_mac: effective_mac.clone(),
-            source_ip: IpAddr::V4(lease.address),
-            stb_type: "E900V21D".to_owned(),
-            area_id: "021".to_owned(),
-            user_group_id: "2025".to_owned(),
-            nonce: fresh_epg_nonce().map_err(|_| {
-                report_startup_stage("epg-client");
-                startup_error()
-            })?,
-            write_timeout: Duration::from_secs(30),
-            pool_timeout: Duration::from_secs(5),
-            media_pool_size: 8,
-        },
-        token.clone(),
-    )
+    let client = EpgClient::new(EpgConfig {
+        authentication_url: config.authentication_url.clone(),
+        user_id: config.epg_user.as_str().to_owned(),
+        password: config.epg_password.as_str().to_owned(),
+        stb_id,
+        stb_mac: effective_mac.clone(),
+        source_ip: IpAddr::V4(lease.address),
+        stb_type: "E900V21D".to_owned(),
+        area_id: "021".to_owned(),
+        user_group_id: "2025".to_owned(),
+    })
     .map_err(|_| {
         report_startup_stage("epg-client");
         startup_error()
     })?;
-    let source = Arc::new(EpgMetadataSource::new(client.clone()));
-    let session = source.authenticate(token.clone()).await.map_err(|error| {
-        report_epg_auth_stage(error);
-        startup_error()
-    })?;
-    let channels = source.channels(session, token.clone()).await.map_err(|_| {
-        report_startup_stage("epg-bootstrap");
-        startup_error()
-    })?;
+    tokio::select! {
+        result = client.authenticate() => result.map_err(|error| {
+            report_epg_auth_stage(&error);
+            startup_error()
+        })?,
+        () = token.cancelled() => return Err(startup_error()),
+    }
+    let channels = tokio::select! {
+        result = client.channels() => result.map_err(|_| {
+            report_startup_stage("epg-bootstrap");
+            startup_error()
+        })?,
+        () = token.cancelled() => return Err(startup_error()),
+    };
     let fingerprint =
         CacheFingerprint::from_config(config, Some(&effective_mac)).map_err(|_| {
             report_startup_stage("cache");
@@ -199,7 +192,7 @@ async fn prepare_engine(
     let store = SnapshotStore::new();
     let health = crate::health::HealthState::new();
     let mut engine = RefreshEngine::new(RefreshEngineConfig {
-        source: source.clone(),
+        client: client.clone(),
         store: store.clone(),
         cache: Some(cache),
         cache_fingerprint: Some(fingerprint),
@@ -346,16 +339,6 @@ fn epg_identity(
     )
 }
 
-fn fresh_epg_nonce() -> Result<u32, AppError> {
-    use ring::rand::{SecureRandom, SystemRandom};
-
-    let mut bytes = [0_u8; 4];
-    SystemRandom::new()
-        .fill(&mut bytes)
-        .map_err(|_| startup_error())?;
-    Ok(u32::from_ne_bytes(bytes) % 100_000_000)
-}
-
 async fn signal_watcher(source: CancellationSource) {
     let token = source.token();
     #[cfg(unix)]
@@ -389,34 +372,14 @@ pub(crate) fn report_startup_stage(stage: &'static str) {
     eprintln!("startup_stage={stage}");
 }
 
-fn report_epg_auth_stage(error: crate::refresh::MetadataError) {
+fn report_epg_auth_stage(error: &EpgError) {
     let stage = match error {
-        crate::refresh::MetadataError::Authentication(EpgErrorStage::Discovery, _) => {
-            "epg-discovery"
-        }
-        crate::refresh::MetadataError::Authentication(
-            EpgErrorStage::Login,
-            EpgErrorClass::MissingField,
-        ) => "epg-login-field",
-        crate::refresh::MetadataError::Authentication(
-            EpgErrorStage::Login,
-            EpgErrorClass::Parse,
-        ) => "epg-login-body",
-        crate::refresh::MetadataError::Authentication(EpgErrorStage::Login, _) => {
-            "epg-login-request"
-        }
-        crate::refresh::MetadataError::Authentication(
-            EpgErrorStage::Authentication,
-            EpgErrorClass::MissingField,
-        ) => "epg-authentication-field",
-        crate::refresh::MetadataError::Authentication(
-            EpgErrorStage::Authentication,
-            EpgErrorClass::Parse,
-        ) => "epg-authentication-body",
-        crate::refresh::MetadataError::Authentication(EpgErrorStage::Authentication, _) => {
+        EpgError::Discovery => "epg-discovery",
+        EpgError::MissingField(_) => "epg-authentication-field",
+        EpgError::Parse(_) => "epg-authentication-body",
+        EpgError::Http(_) | EpgError::Status(_) | EpgError::Provider(_) => {
             "epg-authentication-request"
         }
-        _ => "epg-auth",
     };
     report_startup_stage(stage);
 }
@@ -472,7 +435,7 @@ fn report_packet_stage(error: &PacketError) {
 
 #[cfg(test)]
 mod tests {
-    use super::{dhcp_hostname, epg_identity, fresh_epg_nonce, signal_watcher};
+    use super::{dhcp_hostname, epg_identity, signal_watcher};
     use crate::dhcp::MacAddress;
     use crate::lifecycle::CancellationSource;
 
@@ -504,12 +467,5 @@ mod tests {
             epg_identity("configured", Some("configured-mac"), mac),
             ("configured".to_owned(), "configured-mac".to_owned())
         );
-    }
-
-    #[test]
-    fn fresh_epg_nonce_is_always_provider_valid() {
-        for _ in 0..8 {
-            assert!(matches!(fresh_epg_nonce(), Ok(value) if value <= 99_999_999));
-        }
     }
 }

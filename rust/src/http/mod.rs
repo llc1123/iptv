@@ -63,7 +63,6 @@ pub trait PlaybackResolver: Send + Sync {
 pub struct EpgPlaybackResolver {
     client: EpgClient,
     snapshots: SnapshotStore,
-    cancellation: CancellationToken,
 }
 
 impl EpgPlaybackResolver {
@@ -72,13 +71,9 @@ impl EpgPlaybackResolver {
     pub fn with_runtime(
         client: EpgClient,
         snapshots: SnapshotStore,
-        cancellation: CancellationToken,
+        _cancellation: CancellationToken,
     ) -> Self {
-        Self {
-            client,
-            snapshots,
-            cancellation,
-        }
+        Self { client, snapshots }
     }
 }
 
@@ -98,23 +93,27 @@ impl PlaybackResolver for EpgPlaybackResolver {
             if !allowed {
                 return Err(PlaybackError::Unavailable);
             }
-            self.client
-                .hls_url(channel_id, self.cancellation.clone())
+            let url = self
+                .client
+                .hls_url(channel_id)
                 .await
-                .map_err(|_| PlaybackError::Unavailable)
+                .map_err(|_| PlaybackError::Unavailable)?;
+            Url::parse(&url).map_err(|_| PlaybackError::Unavailable)
         })
     }
 
     fn resolve_replay<'a>(
         &'a self,
         programme: &'a Programme,
-        cancellation: CancellationToken,
+        _cancellation: CancellationToken,
     ) -> PlaybackFuture<'a> {
         Box::pin(async move {
-            self.client
-                .tvod_url(programme, cancellation)
+            let url = self
+                .client
+                .tvod_url(programme)
                 .await
-                .map_err(|_| PlaybackError::Unavailable)
+                .map_err(|_| PlaybackError::Unavailable)?;
+            Url::parse(&url).map_err(|_| PlaybackError::Unavailable)
         })
     }
 }

@@ -3,16 +3,13 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use tokio::sync::Semaphore;
 use tokio::task::{JoinHandle, JoinSet};
 
-use crate::epg::{
-    BootChannel, EpgClient, EpgError, EpgErrorClass, EpgErrorStage, Programme, SessionBundle,
-};
+use crate::epg::{BootChannel, EpgClient, EpgError, Programme, ProgrammeQuery};
 use crate::error::OperationCode;
 use crate::guide::cache::CacheError;
 use crate::guide::{CacheFingerprint, GuideCache, GuideWindow};
@@ -26,206 +23,6 @@ const BACKOFF_BASE: Duration = Duration::from_secs(60);
 const MAX_BACKOFF_EXPONENT: u32 = 31;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-/// Safe classification of provider failures used by refresh policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MetadataError {
-    /// The current session expired and one reauthentication/replay is allowed.
-    SessionExpired,
-    /// Authentication itself failed and the cycle must stop.
-    Authentication(crate::epg::EpgErrorStage, crate::epg::EpgErrorClass),
-    /// A non-authentication provider or parser failure.
-    Business,
-    /// The caller cancelled the operation.
-    Cancelled,
-}
-
-/// Opaque session handle passed from the shared EPG coordinator to metadata calls.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MetadataSession {
-    generation: u64,
-}
-
-impl MetadataSession {
-    /// Creates a handle for a coordinator generation.
-    #[must_use]
-    pub const fn new(generation: u64) -> Self {
-        Self { generation }
-    }
-
-    /// Returns the coordinator generation represented by this handle.
-    #[must_use]
-    pub const fn generation(&self) -> u64 {
-        self.generation
-    }
-}
-
-impl From<EpgError> for MetadataError {
-    fn from(error: EpgError) -> Self {
-        match (error.stage(), error.class_code(), error.status_code()) {
-            (EpgErrorStage::Request, EpgErrorClass::HttpStatus, Some(401 | 403)) => {
-                Self::SessionExpired
-            }
-            (
-                stage @ (EpgErrorStage::Discovery
-                | EpgErrorStage::Login
-                | EpgErrorStage::Authentication),
-                _,
-                _,
-            ) => Self::Authentication(stage, error.class_code()),
-            (_, EpgErrorClass::Cancelled, _) => Self::Cancelled,
-            _ => Self::Business,
-        }
-    }
-}
-
-/// Provider-facing metadata source. Implementations must redact their own errors.
-pub trait MetadataSource: Send + Sync {
-    /// Authenticates or reuses the shared generation-keyed session.
-    fn authenticate(
-        &self,
-        cancellation: CancellationToken,
-    ) -> BoxFuture<'_, Result<Arc<MetadataSession>, MetadataError>>;
-    /// Reauthenticates only when the observed session generation is still current.
-    fn reauthenticate(
-        &self,
-        session: Arc<MetadataSession>,
-        cancellation: CancellationToken,
-    ) -> BoxFuture<'_, Result<Arc<MetadataSession>, MetadataError>>;
-    /// Fetches boot channels, codes, and groups as one publishable collection.
-    fn channels(
-        &self,
-        session: Arc<MetadataSession>,
-        cancellation: CancellationToken,
-    ) -> BoxFuture<'_, Result<Vec<BootChannel>, MetadataError>>;
-    /// Fetches one programme window.
-    fn programmes(
-        &self,
-        session: Arc<MetadataSession>,
-        channel: BootChannel,
-        window: GuideWindow,
-        cancellation: CancellationToken,
-    ) -> BoxFuture<'_, Result<Vec<Programme>, MetadataError>>;
-}
-
-/// Adapter that routes refresh metadata through the existing authenticated EPG client.
-pub struct EpgMetadataSource {
-    client: EpgClient,
-    session: Mutex<Option<Arc<SessionBundle>>>,
-}
-
-impl EpgMetadataSource {
-    /// Creates the refresh adapter without authenticating or contacting the provider.
-    #[must_use]
-    pub fn new(client: EpgClient) -> Self {
-        Self {
-            client,
-            session: Mutex::new(None),
-        }
-    }
-
-    /// Authenticates and fetches the initial channel bootstrap.
-    ///
-    /// # Errors
-    /// Returns the fixed metadata error produced by authentication or channel parsing.
-    pub async fn bootstrap(
-        &self,
-        cancellation: CancellationToken,
-    ) -> Result<Vec<BootChannel>, MetadataError> {
-        let session = self.authenticate(cancellation.clone()).await?;
-        self.channels(session, cancellation).await
-    }
-}
-
-impl MetadataSource for EpgMetadataSource {
-    fn authenticate(
-        &self,
-        cancellation: CancellationToken,
-    ) -> BoxFuture<'_, Result<Arc<MetadataSession>, MetadataError>> {
-        Box::pin(async move {
-            let session = tokio::select! {
-                result = self.client.authenticate_with_shutdown(cancellation.clone()) => result.map_err(MetadataError::from)?,
-                () = cancellation.cancelled() => return Err(MetadataError::Cancelled),
-            };
-            let generation = session.generation();
-            let mut current = self.session.lock().map_err(|_| MetadataError::Business)?;
-            *current = Some(session);
-            Ok(Arc::new(MetadataSession::new(generation)))
-        })
-    }
-
-    fn reauthenticate(
-        &self,
-        session: Arc<MetadataSession>,
-        cancellation: CancellationToken,
-    ) -> BoxFuture<'_, Result<Arc<MetadataSession>, MetadataError>> {
-        Box::pin(async move {
-            let current = tokio::select! {
-                result = self.client.force_reauthenticate_with_shutdown(
-                    session.generation(),
-                    cancellation.clone(),
-                ) => result.map_err(MetadataError::from)?,
-                () = cancellation.cancelled() => return Err(MetadataError::Cancelled),
-            };
-            let generation = current.generation();
-            let mut stored = self.session.lock().map_err(|_| MetadataError::Business)?;
-            *stored = Some(current);
-            Ok(Arc::new(MetadataSession::new(generation)))
-        })
-    }
-
-    fn channels(
-        &self,
-        session: Arc<MetadataSession>,
-        cancellation: CancellationToken,
-    ) -> BoxFuture<'_, Result<Vec<BootChannel>, MetadataError>> {
-        Box::pin(async move {
-            let current = self
-                .session
-                .lock()
-                .map_err(|_| MetadataError::Business)?
-                .clone();
-            let Some(current) = current.filter(|value| value.generation() == session.generation())
-            else {
-                return Err(MetadataError::Authentication(
-                    crate::epg::EpgErrorStage::Authentication,
-                    crate::epg::EpgErrorClass::MissingField,
-                ));
-            };
-            tokio::select! {
-                result = self.client.fetch_channels(&current) => result.map_err(MetadataError::from),
-                () = cancellation.cancelled() => Err(MetadataError::Cancelled),
-            }
-        })
-    }
-
-    fn programmes(
-        &self,
-        session: Arc<MetadataSession>,
-        channel: BootChannel,
-        window: GuideWindow,
-        cancellation: CancellationToken,
-    ) -> BoxFuture<'_, Result<Vec<Programme>, MetadataError>> {
-        Box::pin(async move {
-            let current = self
-                .session
-                .lock()
-                .map_err(|_| MetadataError::Business)?
-                .clone();
-            let Some(current) = current.filter(|value| value.generation() == session.generation())
-            else {
-                return Err(MetadataError::Authentication(
-                    crate::epg::EpgErrorStage::Authentication,
-                    crate::epg::EpgErrorClass::MissingField,
-                ));
-            };
-            tokio::select! {
-                result = self.client.fetch_programmes(&current, &channel.channel_id, &channel.code, window.start_ms, window.end_ms.saturating_sub(1)) => result.map_err(MetadataError::from),
-                () = cancellation.cancelled() => Err(MetadataError::Cancelled),
-            }
-        })
-    }
-}
 
 /// Monotonic and UTC time used by one refresh engine.
 pub trait RefreshClock: Send + Sync {
@@ -266,7 +63,7 @@ impl RefreshSleeper for TokioRefreshSleeper {
 
 /// Guide refresh parameters and publication dependencies.
 pub struct RefreshEngine {
-    source: Arc<dyn MetadataSource>,
+    client: EpgClient,
     store: SnapshotStore,
     cache: Option<GuideCache>,
     cache_fingerprint: Option<CacheFingerprint>,
@@ -284,8 +81,8 @@ pub struct RefreshEngine {
 
 /// Configuration for constructing a refresh engine.
 pub struct RefreshEngineConfig {
-    /// Provider metadata source.
-    pub source: Arc<dyn MetadataSource>,
+    /// Provider EPG client.
+    pub client: EpgClient,
     /// Atomic in-memory snapshot store.
     pub store: SnapshotStore,
     /// Optional best-effort persistent cache.
@@ -315,7 +112,7 @@ impl RefreshEngine {
     #[must_use]
     pub fn new(config: RefreshEngineConfig) -> Self {
         Self {
-            source: config.source,
+            client: config.client,
             store: config.store,
             cache: config.cache,
             cache_fingerprint: config.cache_fingerprint,
@@ -338,10 +135,10 @@ impl RefreshEngine {
     ///
     /// # Errors
     /// Returns the snapshot publication error when the generation is not newer.
-    pub fn seed_snapshot(&mut self, snapshot: Arc<Snapshot>) -> Result<(), MetadataError> {
+    pub fn seed_snapshot(&mut self, snapshot: Arc<Snapshot>) -> Result<(), EpgError> {
         self.store
             .publish(Arc::clone(&snapshot))
-            .map_err(|_| MetadataError::Business)?;
+            .map_err(|_| EpgError::Provider("snapshot unavailable".to_owned()))?;
         self.prior = Some(snapshot);
         Ok(())
     }
@@ -349,15 +146,15 @@ impl RefreshEngine {
     /// Publishes a validated warm snapshot before the first scheduled cycle.
     ///
     /// # Errors
-    /// Returns [`MetadataError::Business`] when the store rejects the generation.
+    /// Returns [`EpgError::Provider`] when the store rejects the generation.
     pub async fn seed_warm_snapshot(
         &mut self,
         snapshot: Arc<Snapshot>,
         refreshed_at: u64,
-    ) -> Result<(), MetadataError> {
+    ) -> Result<(), EpgError> {
         self.store
             .publish(Arc::clone(&snapshot))
-            .map_err(|_| MetadataError::Business)?;
+            .map_err(|_| EpgError::Provider("snapshot unavailable".to_owned()))?;
         self.health
             .record_refresh_success(
                 refreshed_at,
@@ -396,63 +193,27 @@ impl RefreshEngine {
         clippy::too_many_lines,
         reason = "the cycle keeps fetch, validate, persist, publish, and health ordering visible"
     )]
-    pub async fn refresh_once(&mut self) -> Result<RefreshOutcome, MetadataError> {
+    pub async fn refresh_once(&mut self) -> Result<RefreshOutcome, EpgError> {
         if self.cancellation.is_cancelled() {
-            return Err(MetadataError::Cancelled);
+            return Err(EpgError::Provider("cancelled".to_owned()));
         }
-        let session = match self.source.authenticate(self.cancellation.clone()).await {
-            Ok(session) => session,
-            Err(error) => {
-                self.record_cycle_failure().await;
-                return Err(error);
-            }
-        };
-        let channel_result = self
-            .source
-            .channels(Arc::clone(&session), self.cancellation.clone())
-            .await;
-        let (session, channels) = match channel_result {
-            Ok(channels) => (session, channels),
-            Err(MetadataError::SessionExpired) => {
-                let session = match self
-                    .source
-                    .reauthenticate(Arc::clone(&session), self.cancellation.clone())
-                    .await
-                {
-                    Ok(session) => session,
-                    Err(error) => {
-                        self.record_cycle_failure().await;
-                        return Err(error);
-                    }
-                };
-                let channels = match self
-                    .source
-                    .channels(Arc::clone(&session), self.cancellation.clone())
-                    .await
-                {
-                    Ok(channels) => channels,
-                    Err(error) => {
-                        self.record_cycle_failure().await;
-                        return Err(error);
-                    }
-                };
-                (session, channels)
-            }
+        let channels = match self.client.channels().await {
+            Ok(channels) => channels,
             Err(error) => {
                 self.record_cycle_failure().await;
                 return Err(error);
             }
         };
         if self.cancellation.is_cancelled() {
-            return Err(MetadataError::Cancelled);
+            return Err(EpgError::Provider("cancelled".to_owned()));
         }
         let previous = self
             .prior
             .as_ref()
             .map(|snapshot| snapshot.programmes().to_vec());
-        let outcomes = self.fetch_windows(session, channels.clone()).await;
+        let outcomes = self.fetch_windows(channels.clone()).await;
         if self.cancellation.is_cancelled() {
-            return Err(MetadataError::Cancelled);
+            return Err(EpgError::Provider("cancelled".to_owned()));
         }
         let valid = outcomes
             .iter()
@@ -461,24 +222,16 @@ impl RefreshEngine {
         if valid == 0 {
             if let Some(error) = outcomes.iter().find_map(|outcome| outcome.error.as_ref()) {
                 crate::startup::report_startup_stage(match error {
-                    MetadataError::Authentication(_, class) => match class {
-                        EpgErrorClass::Parse => "refresh-window-parse",
-                        EpgErrorClass::HttpStatus => "refresh-window-status",
-                        EpgErrorClass::Transport
-                        | EpgErrorClass::Timeout
-                        | EpgErrorClass::PoolTimeout => "refresh-window-request",
-                        EpgErrorClass::Cancelled => "refresh-window-cancelled",
-                        EpgErrorClass::InvalidOrigin
-                        | EpgErrorClass::MissingField
-                        | EpgErrorClass::Crypto => "refresh-window-auth",
-                    },
-                    MetadataError::SessionExpired => "refresh-window-auth",
-                    MetadataError::Business => "refresh-window-other",
-                    MetadataError::Cancelled => "refresh-window-cancelled",
+                    EpgError::Parse(_) => "refresh-window-parse",
+                    EpgError::Status(_) => "refresh-window-status",
+                    EpgError::Http(_) => "refresh-window-request",
+                    EpgError::Discovery | EpgError::MissingField(_) | EpgError::Provider(_) => {
+                        "refresh-window-auth"
+                    }
                 });
             }
             self.record_cycle_failure().await;
-            return Err(MetadataError::Business);
+            return Err(EpgError::Provider("refresh windows failed".to_owned()));
         }
         let failed_windows = outcomes
             .iter()
@@ -529,7 +282,7 @@ impl RefreshEngine {
                     | SnapshotError::StoreUnavailable => "refresh-snapshot",
                 });
                 self.record_cycle_failure().await;
-                return Err(MetadataError::Business);
+                return Err(EpgError::Provider("snapshot validation failed".to_owned()));
             }
         };
         let persistence_failed =
@@ -541,7 +294,9 @@ impl RefreshEngine {
                     &self.cancellation,
                 ) {
                     Ok(()) => false,
-                    Err(CacheError::Cancelled) => return Err(MetadataError::Cancelled),
+                    Err(CacheError::Cancelled) => {
+                        return Err(EpgError::Provider("cancelled".to_owned()));
+                    }
                     Err(_) => {
                         crate::startup::report_startup_stage("refresh-cache");
                         true
@@ -551,12 +306,12 @@ impl RefreshEngine {
                 false
             };
         if self.cancellation.is_cancelled() {
-            return Err(MetadataError::Cancelled);
+            return Err(EpgError::Provider("cancelled".to_owned()));
         }
         if self.store.publish(Arc::clone(&snapshot)).is_err() {
             crate::startup::report_startup_stage("refresh-publish");
             self.record_cycle_failure().await;
-            return Err(MetadataError::Business);
+            return Err(EpgError::Provider("snapshot publication failed".to_owned()));
         }
         self.prior = Some(Arc::clone(&snapshot));
         self.failure_count = 0;
@@ -596,18 +351,13 @@ impl RefreshEngine {
             .await;
     }
 
-    async fn fetch_windows(
-        &self,
-        session: Arc<MetadataSession>,
-        channels: Vec<BootChannel>,
-    ) -> Vec<WindowOutcome> {
+    async fn fetch_windows(&self, channels: Vec<BootChannel>) -> Vec<WindowOutcome> {
         let semaphore = Arc::new(Semaphore::new(MAX_WINDOW_CONCURRENCY));
         let mut set = JoinSet::new();
         for channel in channels {
             for window in &self.windows {
                 let semaphore = Arc::clone(&semaphore);
-                let source = Arc::clone(&self.source);
-                let session = Arc::clone(&session);
+                let client = self.client.clone();
                 let cancellation = self.cancellation.clone();
                 let window = *window;
                 let channel = channel.clone();
@@ -616,34 +366,21 @@ impl RefreshEngine {
                         return WindowOutcome::from_result(
                             window,
                             channel.channel_id,
-                            Err(MetadataError::Cancelled),
+                            Err(EpgError::Provider("cancelled".to_owned())),
                         );
                     };
                     let channel_id = channel.channel_id.clone();
-                    let replay_channel = channel.clone();
-                    let result = source
-                        .programmes(Arc::clone(&session), channel, window, cancellation.clone())
-                        .await;
-                    let result = match result {
-                        Err(MetadataError::SessionExpired) => {
-                            match source
-                                .reauthenticate(Arc::clone(&session), cancellation.clone())
-                                .await
-                            {
-                                Ok(replay_session) => {
-                                    source
-                                        .programmes(
-                                            replay_session,
-                                            replay_channel,
-                                            window,
-                                            cancellation,
-                                        )
-                                        .await
-                                }
-                                Err(error) => Err(error),
-                            }
-                        }
-                        result => result,
+                    let result = if cancellation.is_cancelled() {
+                        Err(EpgError::Provider("cancelled".to_owned()))
+                    } else {
+                        client
+                            .programmes(&ProgrammeQuery {
+                                channel_id: channel.channel_id.clone(),
+                                channel_code: channel.code.clone(),
+                                start_time_ms: window.start_ms,
+                                end_time_ms: window.end_ms.saturating_sub(1),
+                            })
+                            .await
                     };
                     WindowOutcome::from_result(window, channel_id, result)
                 });
@@ -763,19 +500,19 @@ pub struct RefreshOutcome {
     pub failed_windows: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct WindowOutcome {
     channel_id: String,
     window: GuideWindow,
     programmes: Option<Vec<Programme>>,
-    error: Option<MetadataError>,
+    error: Option<EpgError>,
 }
 
 impl WindowOutcome {
     fn from_result(
         window: GuideWindow,
         channel_id: String,
-        result: Result<Vec<Programme>, MetadataError>,
+        result: Result<Vec<Programme>, EpgError>,
     ) -> Self {
         let (programmes, error) = match result {
             Ok(programmes) => (Some(programmes), None),
