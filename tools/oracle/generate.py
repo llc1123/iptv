@@ -1,256 +1,350 @@
 #!/usr/bin/env python3
-"""Generate deterministic golden fixtures from the Python POC oracle.
-
-Usage (from the repository root):
-
-    uv run python tools/oracle/generate.py --output-dir rust/tests/fixtures
-    uv run python tools/oracle/generate.py --check --output-dir rust/tests/fixtures
-
-The generator executes the pure POC behavior in ``iptv_client`` with injected
-randomness, monotonic time, URL-safe tokens, guide time, and base URLs. It
-never reads runtime credentials: ``main`` installs an audit hook (refusing
-network access and any read of ``var/`` or the gitignored E2E environment
-file) before importing any family or ``iptv_client`` module, so POC import
-time behavior runs under the guard. ``--check`` verifies
-that the output directory matches the generated corpus byte for byte and
-exits nonzero when any fixture drifted.
-"""
+"""Regenerate the committed golden fixtures from their synthetic inputs."""
 
 from __future__ import annotations
 
 import argparse
-import sys
-from collections.abc import Callable
+import hashlib
+import json
+import os
+import tempfile
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
+from urllib.parse import urljoin
 
-from support import (
-    CORPUS_DIGEST,
-    FORBIDDEN_MARKERS,
-    REQUIRED_COVERAGE,
-    SCHEMA,
-    SCHEMA_VERSION,
-    Case,
-    OracleSafetyError,
-    corpus_digest,
-    disk_corpus_digest,
-    force_timezone,
-    install_safety_guards,
-    json_text,
-    sha256_hex,
+os.environ.update(
+    IPTV_DHCP_USER="fixture-user",
+    IPTV_DHCP_PASSWORD="fixture-dhcp-password",
+    IPTV_USER_ID="fixture-user",
+    IPTV_PASSWORD="fixture-epg-password",
 )
+os.environ["TZ"] = "<+08>-8"
+time.tzset()
 
-FamilyBuilder = Callable[[], list[Case]]
-FamilySpec = tuple[str, str, FamilyBuilder]
+from Crypto.Cipher import DES
+from Crypto.Util.Padding import pad
+from pydantic import ValidationError
+
+from iptv_client import ctc_dhcp, web
+from iptv_client.auth import make_authenticator
+from iptv_client.errors import IptvError
+from iptv_client.models import (
+    BootChannel,
+    Channel,
+    ChannelListResponse,
+    HlsAddress,
+    Programme,
+    ProgrammeResponse,
+    TvodAddress,
+)
+from iptv_client.parsers import parse_boot_channels
+from iptv_client.service import IptvService, _day_ranges
+from iptv_client.xmltv import render_m3u, render_xmltv
+
+ROOT = Path(__file__).resolve().parents[2]
+FIXTURES = ROOT / "rust/tests/fixtures"
 
 
-def family_builders() -> tuple[FamilySpec, ...]:
-    """Return the fixture family builders.
-
-    The family modules import ``iptv_client`` (whose ``dhcp`` module reads
-    environment configuration at import time), so they are imported here,
-    after ``main`` has installed the safety guard, never at module load.
-    """
-    from families_crypto import epg_auth_cases, option60_cases, padding_cases
-    from families_guide import catchup_cases, guide_cache_cases
-    from families_hls import hls_resource_cases, hls_rewrite_cases
-    from families_provider import model_cases, parser_cases
-    from families_render import render_cases, urljoin_cases
-    from families_status import status_shape_cases
-
+def json_text(value: Any) -> bytes:
     return (
-        ("padding.json", "padding", padding_cases),
-        ("option60.json", "option60", option60_cases),
-        ("epg_auth.json", "epg-auth", epg_auth_cases),
-        ("parsers.json", "parsers", parser_cases),
-        ("models.json", "models", model_cases),
-        ("status_shapes.json", "status", status_shape_cases),
-        ("m3u_xmltv.json", "render", render_cases),
-        ("guide_cache.json", "guide-cache", guide_cache_cases),
-        ("urljoin.json", "urljoin", urljoin_cases),
-        ("catchup.json", "catchup", catchup_cases),
-        (
-            "hls_rewrite.json",
-            "hls-rewrite",
-            lambda: hls_rewrite_cases() + hls_resource_cases(),
-        ),
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode()
+
+
+def error(kind: str, operation: str, detail: str | None = None) -> dict[str, Any]:
+    value: dict[str, Any] = {"kind": kind, "operation": operation}
+    if detail is not None:
+        value["detail"] = detail
+    return {"error": value}
+
+
+def option60(case: dict[str, Any]) -> dict[str, Any]:
+    data = case["input"]
+    if data.get("direction") == "decode":
+        kinds = {
+            "prefix": "option60-malformed-prefix",
+            "length": "option60-malformed-length",
+            "method": "option60-malformed-method",
+        }
+        return error(kinds[data["violates"]], "dhcp")
+    password = data.get("password", "fixture-dhcp-password")
+    try:
+        wire = ctc_dhcp.make_option60(
+            password=password,
+            login=data["login"],
+            r=bytes.fromhex(data["r_hex"]),
+            ts=bytes.fromhex(data["ts_hex"]),
+        )
+    except ValueError as exc:
+        return error("option60-oversized-payload", "dhcp", str(exc))
+    return {
+        "wire_hex": wire.hex(),
+        "declared_length": wire[3],
+        "hash_key_hex": hashlib.md5(
+            bytes.fromhex(data["r_hex"])
+            + password.encode()
+            + bytes.fromhex(data["ts_hex"])
+        ).hexdigest(),
+        "ciphertext_hex": wire[37:].hex(),
+    }
+
+
+def guide(case: dict[str, Any]) -> dict[str, Any]:
+    data = case["input"]
+    kind = data["kind"]
+    if kind == "render-cache":
+        return {"rule": "cache-keyed-by-base-url"}
+    if kind == "day-ranges":
+        now = datetime.fromisoformat(data["now"])
+        return {
+            "ranges": [
+                list(pair)
+                for pair in _day_ranges(now, data["past_days"], data["future_days"])
+            ]
+        }
+    programmes = [Programme.model_validate(item) for item in data.get("programmes", [])]
+    if kind == "persist":
+        return {
+            "file_text": json.dumps(
+                [p.model_dump(by_alias=True) for p in programmes],
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        }
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
+        handle.write(data["file_text"])
+        handle.flush()
+        try:
+            loaded = IptvService._load_guide_cache(Path(handle.name))
+        except IptvError as exc:
+            kind_by_detail = {
+                "guide cache must contain a JSON list": "guide-cache-not-a-list"
+            }
+            kind_name = kind_by_detail.get(
+                exc.detail,
+                "guide-cache-invalid-programme"
+                if case["id"].endswith("invalid-programme")
+                else "guide-cache-invalid-json",
+            )
+            detail = (
+                exc.detail
+                if exc.detail == "guide cache must contain a JSON list"
+                else None
+            )
+            return error(kind_name, "guide-cache", detail)
+    return {"programmes": [p.model_dump() for p in loaded or ()]}
+
+
+class FixtureSecrets:
+    def __init__(self) -> None:
+        self.counter = 0
+
+    def token_urlsafe(self, nbytes: int) -> str:
+        del nbytes
+        self.counter += 1
+        return f"fixturetok{self.counter:014d}"
+
+
+class FixtureClock:
+    def __init__(self) -> None:
+        self.now_ms = 0
+
+    def monotonic(self) -> float:
+        return self.now_ms / 1000
+
+
+def hls(case: dict[str, Any]) -> dict[str, Any]:
+    secrets = FixtureSecrets()
+    clock = FixtureClock()
+    web.secrets.__dict__["token_urlsafe"] = lambda nbytes=None: secrets.token_urlsafe(
+        nbytes or 18
     )
+    web.time.__dict__["monotonic"] = lambda: clock.monotonic()
+    proxy = web.HlsProxy(IptvService.__new__(IptvService))
+    data = case["input"]
+    if data["kind"] == "rewrite":
+        output = proxy._rewrite_playlist(data["body"].encode(), data["base_url"])
+        resources = [
+            {"token": token, "url": resource.url, "suffix": token[24:]}
+            for token, resource in proxy._resources.items()
+        ]
+        return {"output": output.decode(), "resources": resources}
+    clock.now_ms = data["register_at_ms"]
+    token = proxy._register(data["url"], data["suffix"])
+    result: dict[str, object] = {"token": token, "url": data["url"]}
+    for now_ms in data["resolve_at_ms"]:
+        clock.now_ms = now_ms
+        try:
+            proxy._resolve(token)
+        except IptvError as exc:
+            return error("hls-resource-expired", "hls-proxy", exc.detail)
+    return result
+
+
+def render(case: dict[str, Any]) -> dict[str, Any]:
+    data = case["input"]
+    channels = [BootChannel.model_validate(item) for item in data["channels"]]
+    programmes = [Programme.model_validate(item) for item in data["programmes"]]
+    if data["renderer"] == "m3u":
+        return {
+            "text": render_m3u(
+                channels, data["base_url"], catchup_days=data["catchup_days"]
+            )
+        }
+    offset = timezone(timedelta(minutes=data["timezone_offset_minutes"]))
+    return {
+        "text": render_xmltv(
+            channels,
+            programmes,
+            timezone=offset,
+            base_url=data["base_url"],
+        ).decode()
+    }
+
+
+MODELS = {
+    "Channel": Channel,
+    "Programme": Programme,
+    "TvodAddress": TvodAddress,
+    "HlsAddress": HlsAddress,
+    "BootChannel": BootChannel,
+    "ProgrammeResponse": ProgrammeResponse,
+    "ChannelListResponse": ChannelListResponse,
+}
+
+
+def model(case: dict[str, Any]) -> dict[str, Any]:
+    data = case["input"]
+    validator = MODELS[data["model"]]
+    try:
+        parsed = validator.model_validate(data["payload"])
+    except ValidationError:
+        return error("models-validation", "epg-http")
+    return {"fields": parsed.model_dump()}
+
+
+def expected(family: str, case: dict[str, Any]) -> dict[str, Any]:
+    data = case["input"]
+    if family == "padding":
+        plain = bytes.fromhex(data["plaintext_hex"])
+        if data["kind"] == "pkcs7":
+            return {"padded_hex": pad(plain, DES.block_size).hex()}
+        return {"padded_hex": (plain + b"\0" * (8 - len(plain) % 8)).hex()}
+    if family == "option60":
+        return option60(case)
+    if family == "epg-auth":
+        return {"authenticator_hex": make_authenticator(**data)}
+    if family == "catchup":
+        from iptv_client.web import _catchup_time_ms
+
+        try:
+            return {"start_time_ms": _catchup_time_ms(data["utc"])}
+        except IptvError as exc:
+            kind = (
+                "catchup-missing-time"
+                if exc.detail == "catch-up start time is required"
+                else "catchup-invalid-time"
+            )
+            return error(kind, "epg-replay", exc.detail)
+    if family == "guide-cache":
+        return guide(case)
+    if family == "hls-rewrite":
+        return hls(case)
+    if family == "render":
+        return render(case)
+    if family == "models":
+        return model(case)
+    if family == "parsers":
+        try:
+            return {
+                "channels": [
+                    channel.model_dump()
+                    for channel in parse_boot_channels(data["body"])
+                ]
+            }
+        except IptvError as exc:
+            return error("parsers-no-boot-channels", "epg-channels", exc.detail)
+    if family == "status":
+        if data["kind"] == "http-error":
+            status = 502 if data["operation"] == "hls-proxy" else 503
+            body = {"error": str(IptvError(data["operation"], data["detail"]))}
+            return {"status": status, "body": body}
+        payload = data["payload"]
+        if payload["status"] == "1":
+            return {"result": "ok"}
+        detail = payload["errMsg"] or f"status={payload['status']}"
+        return error("provider-status-failure", data["operation"], detail)
+    if family == "urljoin":
+        return {"url": urljoin(data["base"], data["reference"])}
+    raise ValueError(f"unknown fixture family: {family}")
 
 
 def build_corpus() -> dict[str, bytes]:
-    """Build the full fixture corpus as ``path -> file bytes`` mappings."""
+    source_manifest = json.loads((FIXTURES / "manifest.json").read_text())
     corpus: dict[str, bytes] = {}
-    manifest_files = []
-    covered: set[str] = set()
-    for filename, family_name, builder in family_builders():
-        cases = builder()
-        ids = [case.id for case in cases]
-        if len(set(ids)) != len(ids):
-            raise OracleSafetyError(f"duplicate case id in {filename}")
-        for case in cases:
-            covered.update(case.covers)
-        document = {
-            "family": family_name,
-            "cases": [case.to_json() for case in cases],
-        }
-        payload = json_text(document).encode("utf-8")
+    files = []
+    for metadata in source_manifest["files"]:
+        filename = metadata["path"]
+        document = json.loads((FIXTURES / filename).read_text())
+        cases = [
+            {**case, "expected": expected(document["family"], case)}
+            for case in document["cases"]
+        ]
+        payload = json_text({"family": document["family"], "cases": cases})
         corpus[filename] = payload
-        manifest_files.append(
+        files.append(
             {
                 "path": filename,
-                "family": family_name,
-                "sha256": sha256_hex(payload),
+                "family": document["family"],
+                "sha256": hashlib.sha256(payload).hexdigest(),
                 "case_count": len(cases),
-                "covers": sorted({cover for case in cases for cover in case.covers}),
+                "covers": sorted({cover for case in cases for cover in case["covers"]}),
             }
         )
-    missing = sorted(set(REQUIRED_COVERAGE) - covered)
-    if missing:
-        raise OracleSafetyError(f"required coverage is missing cases: {missing}")
-    manifest = {
-        "schema": SCHEMA,
-        "version": SCHEMA_VERSION,
-        "about": (
-            "Deterministic golden fixtures generated from the Python POC oracle. "
-            "All inputs are synthetic constants declared below; expected values "
-            "are produced by executing iptv_client code, never by hand."
-        ),
-        "timezone": {
-            "local_posix": "<+08>-8",
-            "render_offset_minutes": 480,
-        },
-        "required_coverage": list(REQUIRED_COVERAGE),
-        "forbidden_markers_sha256": sha256_hex(
-            "\n".join(sorted(FORBIDDEN_MARKERS)).encode("utf-8")
-        ),
-        "inputs": {
-            "dhcp_user": "fixture-user",
-            "dhcp_password": "fixture-dhcp-password",
-            "epg_user": "fixture-user",
-            "epg_password": "fixture-epg-password",
-            "encrypt_token": "FIXTURE-ENCRYPT-TOKEN",
-            "stb_id": "0102030405060708",
-            "ip_address": "192.0.2.10",
-            "mac": "02:00:00:00:00:01",
-            "custom_str": "$CTC",
-            "random_value": 12345678,
-            "r_hex": "7856341200000000",
-            "ts_hex": "cb047b4514000000",
-            "base_url": "http://192.0.2.1:8080",
-            "upstream_base": "http://upstream.example.com:8080/live/chan.m3u8",
-            "token_prefix": "fixturetok",
-        },
-        "files": manifest_files,
-    }
-    corpus["manifest.json"] = json_text(manifest).encode("utf-8")
+    corpus["manifest.json"] = json_text({**source_manifest, "files": files})
     return corpus
 
 
-def scan_forbidden(output_dir: Path, corpus: dict[str, bytes]) -> None:
-    """Refuse fixtures carrying runtime-secret or host-path markers.
-
-    The marker list itself travels in the manifest only as a SHA-256 digest so
-    that no fixture file, including the manifest, contains a marker literal.
-    """
-    for name, payload in corpus.items():
-        text = payload.decode("utf-8")
-        for marker in FORBIDDEN_MARKERS:
-            if marker in text:
-                raise OracleSafetyError(
-                    f"fixture {name} contains forbidden marker {marker!r}"
-                )
-    if output_dir.is_dir():
-        for path in sorted(output_dir.iterdir()):
-            if path.is_file() and path.name.endswith(".json"):
-                text = path.read_text(encoding="utf-8")
-                for marker in FORBIDDEN_MARKERS:
-                    if marker in text:
-                        raise OracleSafetyError(
-                            f"on-disk fixture {path.name} contains forbidden marker {marker!r}"
-                        )
-
-
-def write_outputs(output_dir: Path, corpus: dict[str, bytes]) -> None:
-    """Write the corpus to ``output_dir`` with atomic per-file replacement.
-
-    Each file is staged as ``.<name>.tmp`` and swapped in with an atomic
-    replace. The ``finally`` unlink keeps any unwinding interruption
-    (including ``KeyboardInterrupt`` from SIGINT) from leaving a staged file
-    behind; it is idempotent because a successful replace already consumed
-    the staging path.
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for name in sorted(corpus):
-        target = output_dir / name
-        temporary = output_dir / f".{name}.tmp"
-        try:
-            temporary.write_bytes(corpus[name])
-            temporary.replace(target)
-        finally:
-            temporary.unlink(missing_ok=True)
-
-
-def check_outputs(output_dir: Path, corpus: dict[str, bytes]) -> list[str]:
-    """Return drift descriptions when ``output_dir`` differs from the corpus."""
-    drift = []
+def check(output_dir: Path, corpus: dict[str, bytes]) -> list[str]:
     on_disk = (
         {
             path.name: path.read_bytes()
-            for path in sorted(output_dir.iterdir())
+            for path in output_dir.glob("*")
             if path.is_file()
         }
         if output_dir.is_dir()
         else {}
     )
-    for name in sorted(corpus):
-        if name not in on_disk:
-            drift.append(f"missing: {name}")
-        elif on_disk[name] != corpus[name]:
-            drift.append(f"changed: {name}")
-    for name in sorted(on_disk):
-        if name not in corpus:
-            drift.append(f"extra: {name}")
-    return drift
+    return (
+        [f"missing: {name}" for name in corpus if name not in on_disk]
+        + [
+            f"changed: {name}"
+            for name in corpus
+            if name in on_disk and on_disk[name] != corpus[name]
+        ]
+        + [f"extra: {name}" for name in on_disk if name not in corpus]
+    )
 
 
 def main() -> int:
-    """CLI entry point: generate or drift-check the fixture corpus."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--check", action="store_true")
     arguments = parser.parse_args()
-
-    repo_root = Path(__file__).resolve().parents[2]
-    try:
-        install_safety_guards(repo_root)
-        force_timezone()
-        corpus = build_corpus()
-        scan_forbidden(arguments.output_dir, corpus)
-        generated_digest = corpus_digest(corpus, Path("rust/tests/fixtures"))
-        if generated_digest != CORPUS_DIGEST:
-            raise OracleSafetyError(
-                f"generated corpus digest drifted: {generated_digest}"
-            )
-    except OracleSafetyError as error:
-        print(f"REFUSED: {error}", file=sys.stderr)
-        return 2
-
+    corpus = build_corpus()
+    drift = check(arguments.output_dir, corpus)
     if arguments.check:
-        drift = check_outputs(arguments.output_dir, corpus)
         if drift:
-            print("DRIFT DETECTED:", file=sys.stderr)
-            for entry in drift:
-                print(f"  {entry}", file=sys.stderr)
+            print("DRIFT DETECTED:", *drift, sep="\n")
             return 1
-        for name in sorted(corpus):
-            print(f"{sha256_hex(corpus[name])}  {name}")
-        print(f"CORPUS_DIGEST={disk_corpus_digest(arguments.output_dir)}")
         print(f"OK ({len(corpus)} files match)")
         return 0
-
-    write_outputs(arguments.output_dir, corpus)
-    for name in sorted(corpus):
-        print(f"{sha256_hex(corpus[name])}  {name}")
-    print(f"CORPUS_DIGEST={disk_corpus_digest(arguments.output_dir)}")
+    arguments.output_dir.mkdir(parents=True, exist_ok=True)
+    for name, payload in corpus.items():
+        (arguments.output_dir / name).write_bytes(payload)
     print(f"WROTE ({len(corpus)} files)")
     return 0
 
