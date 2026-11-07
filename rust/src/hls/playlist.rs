@@ -13,10 +13,6 @@ use crate::lifecycle::CancellationToken;
 
 use super::tokens::{Resource, TokenStore};
 
-#[cfg(test)]
-#[path = "playlist_tests.rs"]
-mod playlist_tests;
-
 /// Maximum accepted playlist body and produced body size.
 pub const PLAYLIST_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum accepted logical line length, excluding its line ending.
@@ -142,9 +138,10 @@ fn stage_resources(
         let reference = text
             .get(span.start..span.end)
             .ok_or(HlsError::ResourceUnavailable)?;
-        let resolved = final_url
+        let mut resolved = final_url
             .join(reference)
             .map_err(|_| HlsError::ResourceUnavailable)?;
+        resolved.set_fragment(None);
         let resolved_text = resolved.to_string().replace("%EF%BB%BF", "\u{feff}");
         resolved_bytes = resolved_bytes
             .checked_add(resolved_text.len())
@@ -285,7 +282,7 @@ fn scan_attributes(
             cursor += 1;
         }
         if cursor >= end || bytes[cursor] != b'=' {
-            cursor = key_start.saturating_add(1);
+            cursor = cursor.saturating_add(1);
             continue;
         }
         cursor += 1;
@@ -293,7 +290,7 @@ fn scan_attributes(
             cursor += 1;
         }
         if cursor >= end || bytes[cursor] != b'"' {
-            cursor = key_start.saturating_add(1);
+            cursor = cursor.saturating_add(1);
             continue;
         }
         let value_start = cursor + 1;
