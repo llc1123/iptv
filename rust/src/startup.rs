@@ -9,17 +9,54 @@ use crate::{
     refresh,
     snapshot::Snapshot,
 };
+use axum::Router;
 use chrono_tz::Tz;
 use std::{net::IpAddr, sync::Arc};
 use tokio::{
+    net::TcpListener,
     sync::{RwLock, mpsc, watch},
+    task::JoinHandle,
     time::{Duration, timeout},
 };
 
-pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+type StartupError = Box<dyn std::error::Error + Send + Sync>;
+
+struct Service {
+    listener: TcpListener,
+    router: Router,
+    refresh: JoinHandle<()>,
+}
+
+pub async fn run(config: Config) -> Result<(), StartupError> {
     let zone = config.guide_timezone.parse::<Tz>().map(GuideZone::Iana)?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let signal_task = tokio::spawn(signal(shutdown_tx.clone()));
+    let mut startup_shutdown = shutdown_rx.clone();
+    let service = tokio::select! {
+        result = start(config, zone, shutdown_rx) => result?,
+        () = wait_shutdown(&mut startup_shutdown) => {
+            tracing::info!("shutdown requested during startup");
+            signal_task.abort();
+            return Ok(());
+        }
+    };
+    axum::serve(service.listener, service.router)
+        .with_graceful_shutdown(async move {
+            let mut shutdown = startup_shutdown;
+            wait_shutdown(&mut shutdown).await;
+        })
+        .await?;
+    let _ = shutdown_tx.send(true);
+    let _ = timeout(Duration::from_secs(5), service.refresh).await;
+    signal_task.abort();
+    Ok(())
+}
+
+async fn start(
+    config: Config,
+    zone: GuideZone,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<Service, StartupError> {
     let interface = config.interface.clone();
     let dhcp_user = config.dhcp_user.as_str().to_owned();
     let dhcp_password = config.dhcp_password.as_str().to_owned();
@@ -36,13 +73,12 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send 
         Ok::<_, crate::dhcp::DhcpError>((lease, mac))
     })
     .await??;
-    let stb_mac = epg_mac(config.epg_mac.as_deref(), interface_mac);
     let epg = EpgClient::new(EpgConfig {
         authentication_url: config.authentication_url.clone(),
         user_id: config.epg_user.as_str().to_owned(),
         password: config.epg_password.as_str().to_owned(),
         stb_id: config.stb_id.clone(),
-        stb_mac,
+        stb_mac: epg_mac(config.epg_mac.as_deref(), interface_mac),
         source_ip: IpAddr::V4(lease.address),
         stb_type: "E900V21D".to_owned(),
         area_id: "021".to_owned(),
@@ -70,51 +106,42 @@ pub async fn run(config: Config) -> Result<(), Box<dyn std::error::Error + Send 
             None
         }
     };
-    let tokens = Arc::new(TokenStore::default());
     let (refresh_tx, refresh_rx) = mpsc::channel(16);
     let state = Arc::new(AppState::new(
         epg.clone(),
         Arc::clone(&snapshots),
-        tokens,
+        Arc::new(TokenStore::default()),
         logos,
         zone.clone(),
         refresh_tx,
         MetadataPaths {
-            catalog: if config.logo_catalog.as_os_str().is_empty() {
-                String::new()
-            } else {
-                config.logo_catalog.display().to_string()
-            },
+            catalog: config.logo_catalog.display().to_string(),
             guide_cache: config.guide_cache.display().to_string(),
         },
     ));
-    let refresh_state = Arc::clone(&snapshots);
-    let refresh_config = config.clone();
-    let guide_zone_for_task = zone.clone();
-    let refresh_handle = tokio::spawn(refresh::run_loop(
+    let refresh = tokio::spawn(refresh::run_loop(
         epg,
-        refresh_config,
-        guide_zone_for_task,
-        refresh_state,
+        config.clone(),
+        zone,
+        snapshots,
         refresh_rx,
         cache_loaded,
-        shutdown_rx.clone(),
+        shutdown_rx,
     ));
-    let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port)).await?;
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(async move {
-            let mut shutdown = shutdown_rx;
-            let _ = shutdown.changed().await;
-        })
-        .await?;
-    let _ = shutdown_tx.send(true);
-    let _ = timeout(Duration::from_secs(5), refresh_handle).await;
-    signal_task.abort();
-    Ok(())
+    let listener = TcpListener::bind((config.host.as_str(), config.port)).await?;
+    Ok(Service {
+        listener,
+        router: router(state),
+        refresh,
+    })
 }
 
 fn epg_mac(configured: Option<&str>, interface: crate::dhcp::MacAddress) -> String {
     configured.map_or_else(|| interface.to_string().to_uppercase(), str::to_owned)
+}
+
+async fn wait_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    let _ = shutdown.changed().await;
 }
 
 async fn signal(sender: watch::Sender<bool>) {

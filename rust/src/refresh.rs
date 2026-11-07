@@ -108,9 +108,6 @@ pub async fn run_loop(
             Some(reply) = requests.recv() => { replies.push(reply); while let Ok(reply) = requests.try_recv() { replies.push(reply); } true },
             result = shutdown.changed() => {
                 if result.is_err() || *shutdown.borrow() {
-                    for reply in replies {
-                        let _ = reply.send(Err(RequestError::new("service", "service is shutting down")));
-                    }
                     while let Ok(reply) = requests.try_recv() {
                         let _ = reply.send(Err(RequestError::new("service", "service is shutting down")));
                     }
