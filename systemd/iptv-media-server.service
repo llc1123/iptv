@@ -1,0 +1,19 @@
+[Unit]
+Description=IPTV media server (Rust)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/iptv
+EnvironmentFile=/opt/iptv/var/iptv.env
+ExecStart=/opt/iptv/rust/target/release/iptv-media-server --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

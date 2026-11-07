@@ -85,6 +85,63 @@ sudo -E uv run iptv-logo-catalog \
   --output var/logo-catalog/catalog.json
 ```
 
+The provider's channel data carries no logos (`ChannelLogURL` is always
+empty); the builder matches channels through a third-party EPG matching
+service and downloads the logos it points to.
+
+## Rust media server
+
+`rust/` contains a Rust rewrite of the media server with the same endpoints,
+flags (`--interface`, `--user-id`, `--password`, ...) and environment
+variables as the Python server. The Python implementation remains the
+reference: deterministic fixtures generated from it by
+`tools/oracle/generate.py` live in `rust/tests/fixtures/` and pin the Rust
+output byte for byte. The only intended difference is that HLS resource URLs
+lose their `#fragment` before they are proxied.
+
+Unlike the Python server, the Rust server also renews its DHCP lease: it
+repeats the authenticated DHCP exchange at half the lease time and retries
+until expiry. If the lease expires or the server hands out a different
+address, the process exits with status 1 so a supervisor such as the systemd
+unit below restarts it on the new lease.
+
+The provider answers many concurrent programme-window requests with HTTP 503;
+the Python server drops those windows (on the live service more than half of
+the guide). The Rust server retries them with backoff and lower concurrency
+before keeping the previous snapshot's programmes for any window that still
+fails.
+
+Prepare the host once, then run the offline gate:
+
+```bash
+rustup toolchain install 1.87.0 --profile minimal --component rustfmt --component clippy
+rustup run 1.87.0 cargo fetch --manifest-path rust/Cargo.toml --locked
+uv sync
+bash scripts/verify.sh
+```
+
+`verify.sh` runs rustfmt, clippy with warnings denied, the test suite
+(in-process loopback mock provider only), the fixture generator in `--check`
+mode, and a release build.
+
+The live gate starts the release binary against the real provider. It needs
+the Python server stopped and a mode-600 `var/iptv-e2e.env` holding the
+`IPTV_*` variables listed above:
+
+```bash
+IPTV_ENABLE_REAL_E2E=1 bash scripts/test-real-e2e.sh
+```
+
+The Rust server does not use `catalog.json`. A channel's logo is
+`<logo-dir>/<channel-id>.png` (`--logo-dir`, default `var/logo-catalog/logos`),
+maintained by the operator; channels with such a file get a `tvg-logo`/`icon`
+pointing at `/logos/<channel-id>`, others get none. Files are checked on each
+feed render, so logos added later appear after the next metadata refresh.
+
+`systemd/iptv-media-server.service` is a unit template that reads the same
+variables from `/opt/iptv/var/iptv.env` and grants only `CAP_NET_RAW` and
+`CAP_NET_ADMIN`, which DHCP needs.
+
 ## Public-release hygiene
 
 The repository ignores local captures, device dumps, APKs, native libraries,
