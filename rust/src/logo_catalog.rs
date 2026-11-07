@@ -150,6 +150,12 @@ pub struct LogoCatalog {
 }
 
 impl LogoCatalog {
+    pub fn logo_count(&self) -> usize {
+        self.entries
+            .values()
+            .filter(|entry| !entry.logo_path.is_empty())
+            .count()
+    }
     /// Loads a catalog using fixed default bounds.
     ///
     /// # Errors

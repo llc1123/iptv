@@ -1,47 +1,51 @@
 use axum::{
     Json,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde_json::json;
-use thiserror::Error;
+use std::fmt;
 
-#[derive(Debug, Error)]
-pub enum RequestError {
-    #[error("unknown channel")]
-    UnknownChannel,
-    #[error("unknown programme")]
-    UnknownProgramme,
-    #[error("unknown or expired token")]
-    UnknownToken,
-    #[error("unknown or unavailable channel logo")]
-    UnknownLogo,
-    #[error("EPG request failed")]
-    Epg,
-    #[error("channel has no replay")]
-    NoReplay,
-    #[error("upstream HLS request failed")]
-    Hls,
-    #[error("invalid catch-up start time")]
-    InvalidCatchup,
+#[derive(Clone, Debug)]
+pub struct RequestError {
+    pub operation: &'static str,
+    pub detail: String,
 }
 
 impl RequestError {
-    const fn status(&self) -> StatusCode {
-        match self {
-            Self::Hls => StatusCode::BAD_GATEWAY,
-            Self::UnknownChannel
-            | Self::UnknownProgramme
-            | Self::UnknownToken
-            | Self::UnknownLogo
-            | Self::InvalidCatchup => StatusCode::NOT_FOUND,
-            Self::Epg | Self::NoReplay => StatusCode::SERVICE_UNAVAILABLE,
+    pub fn new(operation: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            operation,
+            detail: detail.into(),
         }
+    }
+
+    fn status(&self) -> StatusCode {
+        if self.operation == "hls-proxy" {
+            StatusCode::BAD_GATEWAY
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+    }
+}
+
+impl fmt::Display for RequestError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.operation, self.detail)
     }
 }
 
 impl IntoResponse for RequestError {
     fn into_response(self) -> Response {
-        (self.status(), Json(json!({"error": self.to_string()}))).into_response()
+        let mut response = (
+            self.status(),
+            Json(json!({"error": format!("{}: {}", self.operation, self.detail)})),
+        )
+            .into_response();
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        response
     }
 }

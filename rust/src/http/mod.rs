@@ -11,13 +11,14 @@ mod proxy;
 use axum::{
     Json, Router,
     extract::{Path, Request, State},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use feeds::{channels, healthz, logo, xmltv};
 use proxy::{forward, query_value};
 use std::sync::Arc;
-use tokio::sync::{RwLock, mpsc, oneshot, watch};
+use tokio::sync::{RwLock, mpsc, oneshot};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -27,11 +28,12 @@ pub struct AppState {
     pub logos: Option<Arc<LogoCatalog>>,
     pub zone: GuideZone,
     pub refresh: mpsc::Sender<crate::refresh::RefreshReply>,
-    pub shutdown: watch::Sender<bool>,
+    pub metadata: MetadataPaths,
 }
-pub struct ServiceControl {
-    pub refresh: mpsc::Sender<crate::refresh::RefreshReply>,
-    pub shutdown: watch::Sender<bool>,
+#[derive(Clone)]
+pub struct MetadataPaths {
+    pub catalog: String,
+    pub guide_cache: String,
 }
 impl AppState {
     pub fn new(
@@ -40,7 +42,8 @@ impl AppState {
         tokens: Arc<TokenStore>,
         logos: Option<Arc<LogoCatalog>>,
         zone: GuideZone,
-        control: ServiceControl,
+        refresh: mpsc::Sender<crate::refresh::RefreshReply>,
+        metadata: MetadataPaths,
     ) -> Self {
         Self {
             epg,
@@ -48,8 +51,8 @@ impl AppState {
             tokens,
             logos,
             zone,
-            refresh: control.refresh,
-            shutdown: control.shutdown,
+            refresh,
+            metadata,
         }
     }
 }
@@ -61,9 +64,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/xmltv.xml", get(xmltv))
         .route("/logos/{channel_id}", get(logo))
         .route("/metadata/sync", post(sync))
-        .route("/stream/{channel_id}", get(stream))
-        .route("/replay/{channel_id}/{programme_id}", get(replay))
-        .route("/catchup/{channel_id}", get(catchup))
+        .route("/stream/{*channel_id}", get(stream))
+        .route("/replay/{*path}", get(replay))
+        .route("/catchup/{*channel_id}", get(catchup))
         .route("/_hls/{token}", get(resource))
         .with_state(state)
 }
@@ -72,22 +75,31 @@ async fn sync(State(state): State<Arc<AppState>>) -> Result<Response, RequestErr
     let (reply, result) = oneshot::channel();
     state.refresh.send(reply).await.map_err(|error| {
         tracing::warn!(%error, "metadata refresh request could not be queued");
-        RequestError::Epg
+        RequestError::new("service", "service is shutting down")
     })?;
     let counts = result
         .await
         .map_err(|error| {
             tracing::warn!(%error, "metadata refresh reply was dropped");
-            RequestError::Epg
+            RequestError::new("service", "service is shutting down")
         })?
         .map_err(|error| {
             tracing::warn!(%error, "metadata refresh failed");
-            RequestError::Epg
+            error
         })?;
-    Ok(
-        Json(serde_json::json!({"channels": counts.0, "guide_programmes": counts.1}))
-            .into_response(),
-    )
+    let mut response = Json(serde_json::json!({
+        "catalog": state.metadata.catalog,
+        "guide_cache": state.metadata.guide_cache,
+        "channels": counts.channels,
+        "logos": state.logos.as_ref().map_or(0, |catalog| catalog.logo_count()),
+        "guide_programmes": counts.guide_programmes,
+    }))
+    .into_response();
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    Ok(response)
 }
 
 async fn stream(
@@ -95,7 +107,9 @@ async fn stream(
     Path(channel_id): Path<String>,
     request: Request,
 ) -> Response {
-    let channel_id = route_component(&channel_id);
+    let Some(channel_id) = route_component(&channel_id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     if let Some(value) = query_value(request.uri().query(), "utc") {
         return replay_at(&state, &channel_id, &value, request).await;
     }
@@ -105,42 +119,50 @@ async fn stream(
         .iter()
         .find(|channel| channel.channel_id == channel_id)
     else {
-        return RequestError::UnknownChannel.into_response();
+        return RequestError::new("service", format!("unknown channel {channel_id}"))
+            .into_response();
     };
     if channel.time_shift != "1" {
-        return RequestError::NoReplay.into_response();
+        return RequestError::new("epg-tvod", format!("channel {channel_id} has no replay"))
+            .into_response();
     }
     match state.epg.hls_url(&channel_id).await {
         Ok(url) => forward(&state, request, url).await,
         Err(error) => {
             tracing::warn!(%error, channel_id, "live HLS URL lookup failed");
-            RequestError::Epg.into_response()
+            RequestError::new("epg-tvod", error.to_string()).into_response()
         }
     }
 }
 async fn replay(
     State(state): State<Arc<AppState>>,
-    Path((channel_id, programme_id)): Path<(String, String)>,
+    Path(path): Path<String>,
     request: Request,
 ) -> Response {
-    let channel_id = route_component(&channel_id);
-    let programme_id = route_component(&programme_id);
+    let Some(path) = path.trim_start_matches('/').strip_suffix(".m3u8") else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Some((channel_id, programme_id)) = path.split_once('/') else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     let snapshot = state.snapshot.read().await.clone();
     if !snapshot
         .channels()
         .iter()
         .any(|channel| channel.channel_id == channel_id)
     {
-        return RequestError::UnknownChannel.into_response();
+        return RequestError::new("service", format!("unknown channel {channel_id}"))
+            .into_response();
     }
-    let Some(programme) = snapshot.programme_index().by_id(&channel_id, &programme_id) else {
-        return RequestError::UnknownProgramme.into_response();
+    let Some(programme) = snapshot.programme_index().by_id(channel_id, programme_id) else {
+        return RequestError::new("epg-replay", format!("unknown programme {programme_id}"))
+            .into_response();
     };
     match state.epg.tvod_url(programme).await {
         Ok(url) => forward(&state, request, url).await,
         Err(error) => {
             tracing::warn!(%error, channel_id, "replay URL lookup failed");
-            RequestError::Epg.into_response()
+            RequestError::new("epg-replay", error.to_string()).into_response()
         }
     }
 }
@@ -149,7 +171,9 @@ async fn catchup(
     Path(channel_id): Path<String>,
     request: Request,
 ) -> Response {
-    let channel_id = route_component(&channel_id);
+    let Some(channel_id) = route_component(&channel_id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     let value = query_value(request.uri().query(), "utc")
         .or_else(|| query_value(request.uri().query(), "start"));
     replay_at(
@@ -167,19 +191,32 @@ async fn replay_at(state: &AppState, channel_id: &str, value: &str, request: Req
         .iter()
         .any(|channel| channel.channel_id == channel_id)
     {
-        return RequestError::UnknownChannel.into_response();
+        return RequestError::new("service", format!("unknown channel {channel_id}"))
+            .into_response();
     }
     let Ok(timestamp) = parse_catchup_start(value, &state.zone) else {
-        return RequestError::InvalidCatchup.into_response();
+        return RequestError::new(
+            "epg-replay",
+            if value.is_empty() {
+                "catch-up start time is required"
+            } else {
+                "invalid catch-up start time"
+            },
+        )
+        .into_response();
     };
     let Some(programme) = snapshot.programme_index().covering(channel_id, timestamp) else {
-        return RequestError::UnknownProgramme.into_response();
+        return RequestError::new(
+            "epg-replay",
+            format!("no programme covers timestamp {timestamp}"),
+        )
+        .into_response();
     };
     match state.epg.tvod_url(programme).await {
         Ok(url) => forward(state, request, url).await,
         Err(error) => {
             tracing::warn!(%error, channel_id, "catch-up URL lookup failed");
-            RequestError::Epg.into_response()
+            RequestError::new("epg-replay", error.to_string()).into_response()
         }
     }
 }
@@ -191,11 +228,16 @@ async fn resource(
 ) -> Response {
     let url = match state.tokens.resolve(&token) {
         Ok(resource) => resource.url,
-        Err(_) => return RequestError::UnknownToken.into_response(),
+        Err(_) => {
+            return RequestError::new("hls-proxy", "playlist resource expired").into_response();
+        }
     };
     forward(&state, request, url).await
 }
 
-fn route_component(value: &str) -> String {
-    value.strip_suffix(".m3u8").unwrap_or(value).to_owned()
+fn route_component(value: &str) -> Option<String> {
+    value
+        .trim_start_matches('/')
+        .strip_suffix(".m3u8")
+        .map(str::to_owned)
 }

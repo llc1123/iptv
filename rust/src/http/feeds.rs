@@ -18,11 +18,16 @@ const NO_CACHE: [(&str, &str); 3] = [
 
 pub(crate) async fn healthz(State(state): State<Arc<AppState>>) -> Response {
     let snapshot = state.snapshot.read().await;
-    (
+    let mut response = (
         StatusCode::OK,
         Json(serde_json::json!({"status":"ok", "channels":snapshot.channels().len()})),
     )
-        .into_response()
+        .into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    response
 }
 
 async fn feed(
@@ -35,11 +40,11 @@ async fn feed(
     let snapshot = state.snapshot.read().await.clone();
     let base = request_base(uri, headers).map_err(|()| {
         tracing::warn!("feed request base URL was invalid");
-        RequestError::Epg
+        RequestError::new("epg-guide", "request base URL was invalid")
     })?;
     let bytes = snapshot.render(kind, &base).map_err(|error| {
         tracing::warn!(%error, "feed render failed");
-        RequestError::Epg
+        RequestError::new("epg-guide", error.to_string())
     })?;
     let mut response = Response::new(Body::from(bytes.to_vec()));
     response
@@ -58,7 +63,14 @@ pub(crate) async fn channels(
     uri: Uri,
     headers: HeaderMap,
 ) -> Result<Response, RequestError> {
-    feed(&state, &uri, &headers, RenderKind::M3u, "audio/x-mpegurl").await
+    feed(
+        &state,
+        &uri,
+        &headers,
+        RenderKind::M3u,
+        "audio/x-mpegurl; charset=utf-8",
+    )
+    .await
 }
 pub(crate) async fn xmltv(
     State(state): State<Arc<AppState>>,
@@ -72,11 +84,14 @@ pub(crate) async fn logo(
     State(state): State<Arc<AppState>>,
     Path(channel_id): Path<String>,
 ) -> Result<Response, RequestError> {
-    let catalog = state.logos.as_ref().ok_or(RequestError::UnknownLogo)?;
+    let catalog = state
+        .logos
+        .as_ref()
+        .ok_or_else(|| RequestError::new("logo", "unknown or unavailable channel logo"))?;
     let asset = catalog
         .read(&channel_id)
-        .map_err(|_| RequestError::UnknownLogo)?
-        .ok_or(RequestError::UnknownLogo)?;
+        .map_err(|_| RequestError::new("logo", "unknown or unavailable channel logo"))?
+        .ok_or_else(|| RequestError::new("logo", "unknown or unavailable channel logo"))?;
     let mut response = Response::new(Body::from(asset.bytes));
     response.headers_mut().insert(
         header::CONTENT_TYPE,
