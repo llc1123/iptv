@@ -1,0 +1,189 @@
+{
+  "cases": [
+    {
+      "covers": [
+        "catch-up",
+        "numeric-catchup"
+      ],
+      "expected": {
+        "start_time_ms": 1700000000000
+      },
+      "id": "catchup-numeric-seconds",
+      "input": {
+        "utc": "1700000000"
+      }
+    },
+    {
+      "covers": [
+        "catch-up",
+        "numeric-catchup"
+      ],
+      "expected": {
+        "start_time_ms": 1700000000123
+      },
+      "id": "catchup-numeric-millis",
+      "input": {
+        "utc": "1700000000123"
+      }
+    },
+    {
+      "covers": [
+        "catch-up",
+        "numeric-catchup"
+      ],
+      "expected": {
+        "start_time_ms": 10000000000000
+      },
+      "id": "catchup-numeric-threshold-exact",
+      "input": {
+        "utc": "10000000000"
+      }
+    },
+    {
+      "covers": [
+        "catch-up",
+        "numeric-catchup"
+      ],
+      "expected": {
+        "start_time_ms": 10000000001
+      },
+      "id": "catchup-numeric-threshold-above",
+      "input": {
+        "utc": "10000000001"
+      }
+    },
+    {
+      "covers": [
+        "catch-up",
+        "numeric-catchup"
+      ],
+      "expected": {
+        "start_time_ms": 0
+      },
+      "id": "catchup-numeric-zero",
+      "input": {
+        "utc": "0"
+      }
+    },
+    {
+      "covers": [
+        "catch-up",
+        "iso-catchup"
+      ],
+      "expected": {
+        "start_time_ms": 1699971200000
+      },
+      "id": "catchup-iso-offset",
+      "input": {
+        "utc": "2023-11-14T22:13:20+08:00"
+      }
+    },
+    {
+      "covers": [
+        "catch-up",
+        "iso-catchup"
+      ],
+      "expected": {
+        "start_time_ms": 1699971200000
+      },
+      "id": "catchup-iso-naive-local",
+      "input": {
+        "utc": "2023-11-14T22:13:20"
+      }
+    },
+    {
+      "covers": [
+        "catch-up",
+        "iso-catchup"
+      ],
+      "expected": {
+        "start_time_ms": 1699891200000
+      },
+      "id": "catchup-iso-date-only",
+      "input": {
+        "utc": "2023-11-14"
+      }
+    },
+    {
+      "covers": [
+        "catch-up"
+      ],
+      "expected": {
+        "error": {
+          "detail": "catch-up start time is required",
+          "kind": "catchup-missing-time",
+          "operation": "epg-replay"
+        }
+      },
+      "id": "catchup-invalid-empty",
+      "input": {
+        "utc": ""
+      }
+    },
+    {
+      "covers": [
+        "catch-up"
+      ],
+      "expected": {
+        "error": {
+          "detail": "invalid catch-up start time",
+          "kind": "catchup-invalid-time",
+          "operation": "epg-replay"
+        }
+      },
+      "id": "catchup-invalid-text",
+      "input": {
+        "utc": "abc"
+      }
+    },
+    {
+      "covers": [
+        "catch-up"
+      ],
+      "expected": {
+        "error": {
+          "detail": "invalid catch-up start time",
+          "kind": "catchup-invalid-time",
+          "operation": "epg-replay"
+        }
+      },
+      "id": "catchup-invalid-negative",
+      "input": {
+        "utc": "-5"
+      }
+    },
+    {
+      "covers": [
+        "catch-up"
+      ],
+      "expected": {
+        "error": {
+          "detail": "invalid catch-up start time",
+          "kind": "catchup-invalid-time",
+          "operation": "epg-replay"
+        }
+      },
+      "id": "catchup-invalid-whitespace",
+      "input": {
+        "utc": " 123"
+      }
+    },
+    {
+      "covers": [
+        "catch-up"
+      ],
+      "expected": {
+        "error": {
+          "detail": "invalid catch-up start time",
+          "kind": "catchup-invalid-time",
+          "operation": "epg-replay"
+        }
+      },
+      "id": "catchup-invalid-exponent",
+      "input": {
+        "utc": "1e6"
+      }
+    }
+  ],
+  "family": "catchup"
+}

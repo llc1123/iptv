@@ -1,0 +1,83 @@
+{
+  "cases": [
+    {
+      "covers": [
+        "aligned-padding"
+      ],
+      "expected": {
+        "padded_hex": "0808080808080808"
+      },
+      "id": "padding-pkcs7-0",
+      "input": {
+        "kind": "pkcs7",
+        "plaintext_hex": ""
+      }
+    },
+    {
+      "covers": [
+        "aligned-padding"
+      ],
+      "expected": {
+        "padded_hex": "00010203040506070808080808080808"
+      },
+      "id": "padding-pkcs7-8",
+      "input": {
+        "kind": "pkcs7",
+        "plaintext_hex": "0001020304050607"
+      }
+    },
+    {
+      "covers": [
+        "non-aligned-padding"
+      ],
+      "expected": {
+        "padded_hex": "00010203040506070807070707070707"
+      },
+      "id": "padding-pkcs7-9",
+      "input": {
+        "kind": "pkcs7",
+        "plaintext_hex": "000102030405060708"
+      }
+    },
+    {
+      "covers": [
+        "aligned-padding"
+      ],
+      "expected": {
+        "padded_hex": "0000000000000000"
+      },
+      "id": "padding-option60-zero-empty",
+      "input": {
+        "kind": "option60-zero",
+        "plaintext_hex": ""
+      }
+    },
+    {
+      "covers": [
+        "aligned-padding"
+      ],
+      "expected": {
+        "padded_hex": "00010203040506070000000000000000"
+      },
+      "id": "padding-option60-zero-aligned",
+      "input": {
+        "kind": "option60-zero",
+        "plaintext_hex": "0001020304050607"
+      }
+    },
+    {
+      "covers": [
+        "non-aligned-padding"
+      ],
+      "expected": {
+        "padded_hex": "0001020304000000"
+      },
+      "id": "padding-option60-zero-non-aligned",
+      "input": {
+        "kind": "option60-zero",
+        "plaintext_hex": "0001020304"
+      }
+    }
+  ],
+  "family": "padding"
+}

@@ -1,0 +1,186 @@
+{
+  "cases": [
+    {
+      "covers": [
+        "guide-cache"
+      ],
+      "expected": {
+        "rule": "cache-keyed-by-base-url"
+      },
+      "id": "guide-cache-render-keyed-by-base-url",
+      "input": {
+        "kind": "render-cache",
+        "steps": [
+          {
+            "base_url": "http://192.0.2.1:8080",
+            "expect": "render"
+          },
+          {
+            "base_url": "http://192.0.2.1:8080",
+            "expect": "cached"
+          },
+          {
+            "base_url": "http://192.0.2.1:8080/other",
+            "expect": "render"
+          },
+          {
+            "event": "refresh"
+          },
+          {
+            "base_url": "http://192.0.2.1:8080/other",
+            "expect": "render"
+          }
+        ]
+      }
+    },
+    {
+      "covers": [
+        "guide-cache"
+      ],
+      "expected": {
+        "ranges": [
+          [
+            1699286400000,
+            1699372799999
+          ],
+          [
+            1699372800000,
+            1699459199999
+          ],
+          [
+            1699459200000,
+            1699545599999
+          ],
+          [
+            1699545600000,
+            1699631999999
+          ],
+          [
+            1699632000000,
+            1699718399999
+          ],
+          [
+            1699718400000,
+            1699804799999
+          ],
+          [
+            1699804800000,
+            1699891199999
+          ],
+          [
+            1699891200000,
+            1699977599999
+          ],
+          [
+            1699977600000,
+            1700063999999
+          ],
+          [
+            1700064000000,
+            1700150399999
+          ]
+        ]
+      },
+      "id": "guide-cache-day-ranges",
+      "input": {
+        "future_days": 2,
+        "kind": "day-ranges",
+        "now": "2023-11-14T22:13:20+08:00",
+        "past_days": 7,
+        "timezone_offset_minutes": 480
+      }
+    },
+    {
+      "covers": [
+        "guide-cache"
+      ],
+      "expected": {
+        "file_text": "[\n  {\n    \"name\": \"Morning & <News>\",\n    \"startTime\": 1699971200000,\n    \"endTime\": 1699974800000,\n    \"ID\": \"prog/1\",\n    \"channelID\": \"c1\"\n  }\n]\n"
+      },
+      "id": "guide-cache-persist-format",
+      "input": {
+        "kind": "persist",
+        "programmes": [
+          {
+            "ID": "prog/1",
+            "channelID": "c1",
+            "endTime": 1699974800000,
+            "name": "Morning & <News>",
+            "startTime": 1699971200000
+          }
+        ]
+      }
+    },
+    {
+      "covers": [
+        "guide-cache"
+      ],
+      "expected": {
+        "programmes": [
+          {
+            "channel_id": "c1",
+            "end_time_ms": 1699974800000,
+            "programme_id": "prog/1",
+            "start_time_ms": 1699971200000,
+            "title": "Morning & <News>"
+          }
+        ]
+      },
+      "id": "guide-cache-load-valid",
+      "input": {
+        "file_text": "[\n  {\n    \"name\": \"Morning & <News>\",\n    \"startTime\": 1699971200000,\n    \"endTime\": 1699974800000,\n    \"ID\": \"prog/1\",\n    \"channelID\": \"c1\"\n  }\n]\n",
+        "kind": "load"
+      }
+    },
+    {
+      "covers": [
+        "guide-cache"
+      ],
+      "expected": {
+        "error": {
+          "detail": "guide cache must contain a JSON list",
+          "kind": "guide-cache-not-a-list",
+          "operation": "guide-cache"
+        }
+      },
+      "id": "guide-cache-load-not-a-list",
+      "input": {
+        "file_text": "{}",
+        "kind": "load"
+      }
+    },
+    {
+      "covers": [
+        "guide-cache"
+      ],
+      "expected": {
+        "error": {
+          "kind": "guide-cache-invalid-json",
+          "operation": "guide-cache"
+        }
+      },
+      "id": "guide-cache-load-invalid-json",
+      "input": {
+        "file_text": "{not json",
+        "kind": "load"
+      }
+    },
+    {
+      "covers": [
+        "guide-cache"
+      ],
+      "expected": {
+        "error": {
+          "kind": "guide-cache-invalid-programme",
+          "operation": "guide-cache"
+        }
+      },
+      "id": "guide-cache-load-invalid-programme",
+      "input": {
+        "file_text": "[{\"name\": \"x\"}]",
+        "kind": "load"
+      }
+    }
+  ],
+  "family": "guide-cache"
+}

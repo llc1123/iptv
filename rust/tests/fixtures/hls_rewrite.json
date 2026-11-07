@@ -1,0 +1,348 @@
+{
+  "cases": [
+    {
+      "covers": [
+        "hls-rewrite",
+        "relative-urls"
+      ],
+      "expected": {
+        "output": "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\n/_hls/fixturetok00000000000001.ts\n/_hls/fixturetok00000000000002.ts\n",
+        "resources": [
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000001.ts",
+            "url": "http://upstream.example.com:8080/live/seg1.ts"
+          },
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000002.ts",
+            "url": "http://upstream.example.com:8080/live/seg2.ts"
+          }
+        ]
+      },
+      "id": "hls-rewrite-relative-segments",
+      "input": {
+        "base_url": "http://upstream.example.com:8080/live/chan.m3u8",
+        "body": "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nseg1.ts\nseg2.ts\n",
+        "kind": "rewrite"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite",
+        "protocol-relative-urls"
+      ],
+      "expected": {
+        "output": "#EXTM3U\n#EXTINF:10.0,\n/_hls/fixturetok00000000000001.ts\n",
+        "resources": [
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000001.ts",
+            "url": "http://cdn.example.com/s.ts"
+          }
+        ]
+      },
+      "id": "hls-rewrite-protocol-relative-segment",
+      "input": {
+        "base_url": "http://upstream.example.com:8080/live/chan.m3u8",
+        "body": "#EXTM3U\n#EXTINF:10.0,\n//cdn.example.com/s.ts\n",
+        "kind": "rewrite"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite",
+        "query-urls"
+      ],
+      "expected": {
+        "output": "#EXTM3U\n#EXTINF:10.0,\n/_hls/fixturetok00000000000001.ts\n/_hls/fixturetok00000000000002.m3u8\n",
+        "resources": [
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000001.ts",
+            "url": "http://upstream.example.com:8080/live/seg.ts?token=abc&x=1"
+          },
+          {
+            "suffix": ".m3u8",
+            "token": "fixturetok00000000000002.m3u8",
+            "url": "http://upstream.example.com:8080/live/chan.m3u8?start=1"
+          }
+        ]
+      },
+      "id": "hls-rewrite-query-segments",
+      "input": {
+        "base_url": "http://upstream.example.com:8080/live/chan.m3u8",
+        "body": "#EXTM3U\n#EXTINF:10.0,\nseg.ts?token=abc&x=1\n?start=1\n",
+        "kind": "rewrite"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite"
+      ],
+      "expected": {
+        "output": "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"/_hls/fixturetok00000000000001.bin\"\n#EXT-X-MAP:URI=\"/_hls/fixturetok00000000000002.mp4\"\n#EXTINF:10.0,\n/_hls/fixturetok00000000000003.ts\n",
+        "resources": [
+          {
+            "suffix": ".bin",
+            "token": "fixturetok00000000000001.bin",
+            "url": "http://upstream.example.com:8080/live/key.bin"
+          },
+          {
+            "suffix": ".mp4",
+            "token": "fixturetok00000000000002.mp4",
+            "url": "http://upstream.example.com:8080/live/init.mp4"
+          },
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000003.ts",
+            "url": "http://upstream.example.com:8080/live/seg1.ts"
+          }
+        ]
+      },
+      "id": "hls-rewrite-uri-attribute",
+      "input": {
+        "base_url": "http://upstream.example.com:8080/live/chan.m3u8",
+        "body": "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:10.0,\nseg1.ts\n",
+        "kind": "rewrite"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite"
+      ],
+      "expected": {
+        "output": "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,uri=\"key.bin\"\n/_hls/fixturetok00000000000001.ts\n",
+        "resources": [
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000001.ts",
+            "url": "http://upstream.example.com:8080/live/seg1.ts"
+          }
+        ]
+      },
+      "id": "hls-rewrite-lowercase-uri-ignored",
+      "input": {
+        "base_url": "http://upstream.example.com:8080/live/chan.m3u8",
+        "body": "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,uri=\"key.bin\"\nseg1.ts\n",
+        "kind": "rewrite"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite",
+        "crlf-playlists"
+      ],
+      "expected": {
+        "output": "#EXTM3U\n#EXTINF:10.0,\n/_hls/fixturetok00000000000001.ts\n\n",
+        "resources": [
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000001.ts",
+            "url": "http://upstream.example.com:8080/live/seg1.ts"
+          }
+        ]
+      },
+      "id": "hls-rewrite-crlf",
+      "input": {
+        "base_url": "http://upstream.example.com:8080/live/chan.m3u8",
+        "body": "#EXTM3U\r\n#EXTINF:10.0,\r\nseg1.ts\r\n\r\n",
+        "kind": "rewrite"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite",
+        "cr-playlists"
+      ],
+      "expected": {
+        "output": "#EXTM3U\n#EXTINF:10.0,\n/_hls/fixturetok00000000000001.ts\n",
+        "resources": [
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000001.ts",
+            "url": "http://upstream.example.com:8080/live/seg1.ts"
+          }
+        ]
+      },
+      "id": "hls-rewrite-cr",
+      "input": {
+        "base_url": "http://upstream.example.com:8080/live/chan.m3u8",
+        "body": "#EXTM3U\r#EXTINF:10.0,\rseg1.ts\r",
+        "kind": "rewrite"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite",
+        "bom-playlists"
+      ],
+      "expected": {
+        "output": "/_hls/fixturetok00000000000001.ts\n#EXTINF:10.0,\n/_hls/fixturetok00000000000002.ts\n",
+        "resources": [
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000001.ts",
+            "url": "http://upstream.example.com:8080/live/﻿#EXTM3U"
+          },
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000002.ts",
+            "url": "http://upstream.example.com:8080/live/seg1.ts"
+          }
+        ]
+      },
+      "id": "hls-rewrite-bom-first-line-becomes-resource",
+      "input": {
+        "base_url": "http://upstream.example.com:8080/live/chan.m3u8",
+        "body": "﻿#EXTM3U\n#EXTINF:10.0,\nseg1.ts\n",
+        "kind": "rewrite"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite"
+      ],
+      "expected": {
+        "output": "#EXTM3U\n\n/_hls/fixturetok00000000000001.ts\n   \n/_hls/fixturetok00000000000002.ts\n",
+        "resources": [
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000001.ts",
+            "url": "http://upstream.example.com:8080/live/seg1.ts"
+          },
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000002.ts",
+            "url": "http://upstream.example.com:8080/live/seg2.ts"
+          }
+        ]
+      },
+      "id": "hls-rewrite-blank-and-whitespace-lines",
+      "input": {
+        "base_url": "http://upstream.example.com:8080/live/chan.m3u8",
+        "body": "#EXTM3U\n\nseg1.ts\n   \nseg2.ts\n",
+        "kind": "rewrite"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite"
+      ],
+      "expected": {
+        "output": "#EXTM3U\n/_hls/fixturetok00000000000001.ts\n/_hls/fixturetok00000000000002.ts\n/_hls/fixturetok00000000000003.ts\n#EXT-X-KEY:METHOD=AES-128,URI=\"/_hls/fixturetok00000000000004\"\n",
+        "resources": [
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000001.ts",
+            "url": "http://upstream.example.com:8080/live/seg.verylongext"
+          },
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000002.ts",
+            "url": "http://upstream.example.com:8080/live/noextseg"
+          },
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000003.ts",
+            "url": "http://upstream.example.com:8080/live/UPPER.TS"
+          },
+          {
+            "suffix": "",
+            "token": "fixturetok00000000000004",
+            "url": "http://upstream.example.com:8080/live/nokeyext"
+          }
+        ]
+      },
+      "id": "hls-rewrite-extension-defaults",
+      "input": {
+        "base_url": "http://upstream.example.com:8080/live/chan.m3u8",
+        "body": "#EXTM3U\nseg.verylongext\nnoextseg\nUPPER.TS\n#EXT-X-KEY:METHOD=AES-128,URI=\"nokeyext\"\n",
+        "kind": "rewrite"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite"
+      ],
+      "expected": {
+        "output": "#EXTM3U x-tvg-url=\"http://epg.example.com/xmltv.xml\"\n#EXTINF:10.0,\n/_hls/fixturetok00000000000001.ts\n",
+        "resources": [
+          {
+            "suffix": ".ts",
+            "token": "fixturetok00000000000001.ts",
+            "url": "http://other.example.com/z.ts"
+          }
+        ]
+      },
+      "id": "hls-rewrite-x-tvg-url-untouched",
+      "input": {
+        "base_url": "http://upstream.example.com:8080/live/chan.m3u8",
+        "body": "#EXTM3U x-tvg-url=\"http://epg.example.com/xmltv.xml\"\n#EXTINF:10.0,\nhttp://other.example.com/z.ts\n",
+        "kind": "rewrite"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite"
+      ],
+      "expected": {
+        "token": "fixturetok00000000000001.ts",
+        "url": "http://upstream.example.com:8080/live/seg1.ts"
+      },
+      "id": "hls-resource-resolve-before-expiry",
+      "input": {
+        "kind": "resource",
+        "register_at_ms": 0,
+        "resolve_at_ms": [
+          299000
+        ],
+        "suffix": ".ts",
+        "url": "http://upstream.example.com:8080/live/seg1.ts"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite"
+      ],
+      "expected": {
+        "token": "fixturetok00000000000001.ts",
+        "url": "http://upstream.example.com:8080/live/seg1.ts"
+      },
+      "id": "hls-resource-resolve-extends-ttl",
+      "input": {
+        "kind": "resource",
+        "register_at_ms": 0,
+        "resolve_at_ms": [
+          299000,
+          598000
+        ],
+        "suffix": ".ts",
+        "url": "http://upstream.example.com:8080/live/seg1.ts"
+      }
+    },
+    {
+      "covers": [
+        "hls-rewrite"
+      ],
+      "expected": {
+        "error": {
+          "detail": "playlist resource expired",
+          "kind": "hls-resource-expired",
+          "operation": "hls-proxy"
+        }
+      },
+      "id": "hls-resource-expiry-boundary",
+      "input": {
+        "kind": "resource",
+        "register_at_ms": 0,
+        "resolve_at_ms": [
+          300000
+        ],
+        "suffix": ".ts",
+        "url": "http://upstream.example.com:8080/live/seg1.ts"
+      }
+    }
+  ],
+  "family": "hls-rewrite"
+}
