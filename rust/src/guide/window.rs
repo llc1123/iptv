@@ -95,6 +95,24 @@ impl GuideZone {
         }
     }
 
+    fn resolve_midnight(&self, mut local: NaiveDateTime) -> Result<DateTime<Utc>, GuideTimeError> {
+        loop {
+            match self {
+                Self::Fixed { .. } => return self.resolve(local),
+                Self::Iana(zone) => match zone.from_local_datetime(&local) {
+                    LocalResult::Single(value) | LocalResult::Ambiguous(value, _) => {
+                        return Ok(value.with_timezone(&Utc));
+                    }
+                    LocalResult::None => {
+                        local = local
+                            .checked_add_signed(Duration::seconds(1))
+                            .ok_or(GuideTimeError::InvalidTime)?;
+                    }
+                },
+            }
+        }
+    }
+
     fn local_date(&self, now: DateTime<Utc>) -> Result<NaiveDate, GuideTimeError> {
         match self {
             Self::Fixed { offset_minutes } => {
@@ -201,11 +219,11 @@ pub fn build_windows(
                 .checked_add_signed(Duration::days(days))
                 .ok_or(GuideTimeError::InvalidTime)?;
             let next = date.succ_opt().ok_or(GuideTimeError::InvalidTime)?;
-            let start = zone.resolve(
+            let start = zone.resolve_midnight(
                 date.and_hms_opt(0, 0, 0)
                     .ok_or(GuideTimeError::InvalidTime)?,
             )?;
-            let end = zone.resolve(
+            let end = zone.resolve_midnight(
                 next.and_hms_opt(0, 0, 0)
                     .ok_or(GuideTimeError::InvalidTime)?,
             )?;
@@ -329,5 +347,15 @@ mod tests {
             parse_catchup_start("2024-03-10T02:30:00", &zone),
             Err(GuideTimeError::NonexistentLocalTime)
         );
+    }
+
+    #[test]
+    fn windows_resolve_midnight_dst_gap_to_first_valid_instant() {
+        let zone = GuideZone::from_str("America/Santiago").unwrap();
+        let now = DateTime::parse_from_rfc3339("2018-08-12T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let windows = build_windows(now, &zone, 0, 0).unwrap();
+        assert_eq!(windows[0].start_ms, 1_534_046_400_000);
     }
 }
