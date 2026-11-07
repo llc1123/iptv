@@ -459,7 +459,25 @@ impl Platform for LinuxPlatform {
         let index = interface_index(&self.interface)?;
         let socket = RawPacketSocket::open(index)?;
         socket.send(frame, index)?;
-        socket.receive(timeout, clock)
+        let xid = packet::transaction_id(frame).map_err(|_| LinuxError::Io)?;
+        let expected_kind = packet::reply_kind_for_request(frame).map_err(|_| LinuxError::Io)?;
+        let mac = packet::source_mac(frame).map_err(|_| LinuxError::Io)?;
+        let deadline = clock
+            .now()
+            .checked_add(timeout)
+            .ok_or(LinuxError::Timeout)?;
+        loop {
+            let remaining = deadline.saturating_duration_since(clock.now());
+            if remaining.is_zero() {
+                return Err(LinuxError::Timeout);
+            }
+            let reply = socket.receive(remaining, clock)?;
+            match packet::matching_reply(&reply, xid, mac, expected_kind) {
+                Ok(true) => return Ok(reply),
+                Err(packet::PacketError::Nak) => return Err(LinuxError::Io),
+                Ok(false) | Err(_) => {}
+            }
+        }
     }
 
     fn run_command_with_clock(
@@ -562,27 +580,33 @@ impl RawPacketSocket {
             .now()
             .checked_add(timeout)
             .ok_or(LinuxError::Timeout)?;
-        let remaining = deadline.saturating_duration_since(clock.now());
-        let millis = i32::try_from(remaining.as_millis()).map_err(|_| LinuxError::Timeout)?;
-        let mut poll = libc::pollfd {
-            fd: self.fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: `poll` is a valid one-element pollfd array for this synchronous call.
-        let ready = unsafe { libc::poll(&raw mut poll, 1, millis) };
-        if ready == 0 {
-            return Err(LinuxError::Timeout);
+        loop {
+            let remaining = deadline.saturating_duration_since(clock.now());
+            let millis = i32::try_from(remaining.as_millis()).map_err(|_| LinuxError::Timeout)?;
+            let mut poll = libc::pollfd {
+                fd: self.fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `poll` is given a valid one-element pollfd array for this call.
+            let ready = unsafe { libc::poll(&raw mut poll, 1, millis) };
+            if ready == 0 {
+                return Err(LinuxError::Timeout);
+            }
+            if ready < 0 {
+                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(LinuxError::Io);
+            }
+            let mut buffer = vec![0_u8; 2048];
+            // SAFETY: `buffer` is valid writable storage for the requested receive length.
+            let received =
+                unsafe { libc::recv(self.fd, buffer.as_mut_ptr().cast(), buffer.len(), 0) };
+            let received = usize::try_from(received).map_err(|_| LinuxError::Io)?;
+            buffer.truncate(received);
+            return Ok(buffer);
         }
-        if ready < 0 {
-            return Err(LinuxError::Io);
-        }
-        let mut buffer = vec![0_u8; 2048];
-        // SAFETY: `buffer` is valid writable storage for the requested receive length.
-        let received = unsafe { libc::recv(self.fd, buffer.as_mut_ptr().cast(), buffer.len(), 0) };
-        let received = usize::try_from(received).map_err(|_| LinuxError::Io)?;
-        buffer.truncate(received);
-        Ok(buffer)
     }
 }
 

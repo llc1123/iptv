@@ -40,7 +40,6 @@ tower = { version = "0.5.3", features = ["util"] }
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
-unfulfilled_lint_expectations = "allow"
 unused_must_use = "deny"
 non_ascii_idents = "deny"
 trivial_numeric_casts = "warn"
