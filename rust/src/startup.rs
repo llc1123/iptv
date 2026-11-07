@@ -8,11 +8,8 @@ use chrono::Utc;
 use chrono_tz::Tz;
 
 use crate::config::Config;
-use crate::dhcp::linux::{
-    ClientConfig, DhcpClient, LinuxError, LinuxPlatform, Platform, configure_interface,
-};
-use crate::dhcp::packet::{MacAddress, PacketError};
-use crate::dhcp::{DhcpError, LifecycleResult};
+use crate::dhcp::packet::MacAddress;
+use crate::dhcp::{ClientConfig, acquire_lease, configure_interface};
 use crate::epg::{EpgClient, EpgConfig, EpgErrorClass, EpgErrorStage};
 use crate::error::{AppError, StartupError};
 use crate::guide::{
@@ -145,7 +142,7 @@ async fn prepare_engine(
     config: &Config,
     zone: GuideZone,
     windows: Vec<crate::guide::GuideWindow>,
-    lease: crate::dhcp::lease::DhcpLease,
+    lease: crate::dhcp::DhcpLease,
     interface_mac: MacAddress,
     token: CancellationToken,
 ) -> Result<Prepared, AppError> {
@@ -275,7 +272,7 @@ async fn seed_warm_cache(
 async fn acquire_dhcp(
     config: &Config,
     cancellation: CancellationToken,
-) -> Result<(crate::dhcp::lease::DhcpLease, MacAddress), AppError> {
+) -> Result<(crate::dhcp::DhcpLease, MacAddress), AppError> {
     let interface = config.interface.clone();
     let dhcp_user = config.dhcp_user.as_str().to_owned();
     let dhcp_password = config.dhcp_password.as_str().to_owned();
@@ -286,41 +283,23 @@ async fn acquire_dhcp(
         if worker_cancellation.is_cancelled() {
             return Err(startup_error());
         }
-        let mut platform = LinuxPlatform::new(&interface).map_err(|_| {
-            report_startup_stage("dhcp-platform");
-            startup_error()
-        })?;
-        platform.preflight().map_err(|_| {
-            report_startup_stage("dhcp-preflight");
-            startup_error()
-        })?;
-        let mac = platform.interface_mac().map_err(|_| {
-            report_startup_stage("dhcp-interface");
-            startup_error()
-        })?;
-        let hostname = dhcp_hostname(&stb_id_prefix, mac);
         let client_config = ClientConfig {
-            mac,
             user: &dhcp_user,
             password: &dhcp_password,
-            hostname: hostname.as_slice(),
+            stb_id_prefix: &stb_id_prefix,
         };
-        let mut client = DhcpClient::new(platform, client_config);
-        let lease = client.acquire().map_err(|error| {
-            report_dhcp_stage(&error);
+        let (lease, mac) = acquire_lease(&interface, &client_config).map_err(|error| {
+            tracing::error!(%error, "dhcp");
             startup_error()
         })?;
-        let mut platform = client.into_platform();
         if worker_cancellation.is_cancelled() {
             return Err(startup_error());
         }
-        match configure_interface(&mut platform, &interface, &lease, &routes) {
-            Ok(LifecycleResult::Applied(lease)) => Ok((lease, mac)),
-            Ok(LifecycleResult::Preserved { .. }) | Err(_) => {
-                report_startup_stage("dhcp-interface-setup");
-                Err(startup_error())
-            }
-        }
+        configure_interface(&interface, &lease, &routes).map_err(|error| {
+            tracing::error!(%error, "dhcp");
+            startup_error()
+        })?;
+        Ok((lease, mac))
     });
     tokio::select! {
         result = &mut task => result.map_err(|_| startup_error())?,
@@ -329,10 +308,6 @@ async fn acquire_dhcp(
             Err(startup_error())
         }
     }
-}
-
-fn dhcp_hostname(prefix: &str, mac: MacAddress) -> Vec<u8> {
-    format!("{prefix}{}", mac.compact_upper()).into_bytes()
 }
 
 fn epg_identity(
@@ -421,58 +396,9 @@ fn report_epg_auth_stage(error: crate::refresh::MetadataError) {
     report_startup_stage(stage);
 }
 
-fn report_dhcp_stage(error: &DhcpError) {
-    let stage = match error {
-        DhcpError::Crypto(_) => "dhcp-option60",
-        DhcpError::Packet(error) => {
-            report_packet_stage(error);
-            return;
-        }
-        DhcpError::Lease(_) => "dhcp-lease",
-        DhcpError::StageTimeout | DhcpError::Platform(LinuxError::Timeout) => "dhcp-timeout",
-        DhcpError::Platform(LinuxError::Io) => "dhcp-socket",
-        DhcpError::Platform(_) => "dhcp-platform",
-    };
-    report_startup_stage(stage);
-}
-
-fn report_packet_stage(error: &PacketError) {
-    let stage = match error {
-        PacketError::MalformedFrame => "dhcp-frame",
-        PacketError::InvalidMac => "dhcp-mac",
-        PacketError::InvalidCookie => "dhcp-cookie",
-        PacketError::MalformedOptions => "dhcp-options",
-        PacketError::DecodeFailed => "dhcp-message",
-        PacketError::InvalidUdpPorts => "dhcp-ports",
-        PacketError::WrongTransaction => "dhcp-transaction",
-        PacketError::NotBootReply => "dhcp-bootp",
-        PacketError::UnexpectedMessageType => "dhcp-message-type",
-        PacketError::Nak => "dhcp-nak",
-        PacketError::MissingOption => "dhcp-missing-option",
-        PacketError::MissingMessageType => "dhcp-message-type-missing",
-        PacketError::MissingAckOption(code) => match code {
-            1 => "dhcp-ack-subnet-mask-missing",
-            3 => "dhcp-ack-router-missing",
-            125 => "dhcp-ack-vendor-missing",
-            51 => "dhcp-ack-lease-time-missing",
-            54 => "dhcp-ack-server-id-missing",
-            _ => "dhcp-ack-option-missing",
-        },
-        PacketError::InvalidOptionLength(code) => match code {
-            1 => "dhcp-subnet-mask",
-            3 => "dhcp-router",
-            51 => "dhcp-lease-time",
-            54 => "dhcp-server-id",
-            _ => "dhcp-option-length",
-        },
-        PacketError::PacketTooLarge => "dhcp-size",
-    };
-    report_startup_stage(stage);
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{dhcp_hostname, epg_identity, fresh_epg_nonce, signal_watcher};
+    use super::{epg_identity, fresh_epg_nonce, signal_watcher};
     use crate::dhcp::MacAddress;
     use crate::lifecycle::CancellationSource;
 
@@ -485,12 +411,6 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_secs(1), task).await,
             Ok(Ok(()))
         ));
-    }
-
-    #[test]
-    fn dhcp_hostname_matches_python_identity_format() {
-        let mac = MacAddress::new([0x02, 0x0a, 0xb0, 0xc0, 0xd0, 0xe0]);
-        assert_eq!(dhcp_hostname("STB-", mac), b"STB-020AB0C0D0E0");
     }
 
     #[test]
