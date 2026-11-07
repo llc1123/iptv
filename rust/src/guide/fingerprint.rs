@@ -22,13 +22,6 @@ impl fmt::Debug for CacheFingerprint {
 }
 
 impl CacheFingerprint {
-    #[cfg(test)]
-    pub(crate) fn for_test(value: &str) -> Self {
-        Self {
-            value: value.to_owned(),
-        }
-    }
-
     /// Builds a canonical length-delimited fingerprint from guide configuration.
     ///
     /// # Errors

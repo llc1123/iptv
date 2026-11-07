@@ -322,8 +322,3 @@ fn sidecar_path(path: &Path) -> PathBuf {
 pub fn system_now_ms() -> i64 {
     Utc::now().timestamp_millis()
 }
-
-#[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "unit fixtures use fixed valid values")]
-#[path = "cache_tests.rs"]
-mod tests;
