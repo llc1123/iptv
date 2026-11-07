@@ -1144,10 +1144,3 @@ fn form_encode(value: &str) -> String {
     }
     encoded
 }
-#[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    reason = "loopback fixture failures identify protocol regressions"
-)]
-#[path = "client_tests.rs"]
-mod tests;

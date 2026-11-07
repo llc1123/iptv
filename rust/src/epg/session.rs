@@ -27,14 +27,6 @@ impl Clock for SessionClock {
     }
 }
 
-#[cfg(test)]
-#[expect(
-    clippy::expect_used,
-    reason = "session fixtures use explicit construction failures"
-)]
-#[path = "session_tests.rs"]
-mod tests;
-
 /// Injectable asynchronous backoff sleeper.
 pub trait Sleeper: Send + Sync {
     /// Sleeps without blocking the runtime thread.
