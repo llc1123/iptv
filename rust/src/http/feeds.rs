@@ -33,7 +33,10 @@ async fn feed(
     content_type: &'static str,
 ) -> Result<Response, RequestError> {
     let snapshot = state.snapshot.read().await.clone();
-    let base = request_base(uri, headers).map_err(|()| RequestError::Epg)?;
+    let base = request_base(uri, headers).map_err(|()| {
+        tracing::warn!("feed request base URL was invalid");
+        RequestError::Epg
+    })?;
     let bytes = snapshot.render(kind, &base).map_err(|error| {
         tracing::warn!(%error, "feed render failed");
         RequestError::Epg
