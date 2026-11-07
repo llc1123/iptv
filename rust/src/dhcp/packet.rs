@@ -196,8 +196,8 @@ pub fn decode_reply(
     expected_mac: MacAddress,
     expected_kind: ReplyKind,
 ) -> Result<DhcpReply, PacketError> {
-    let (source, dhcp, destination) = decode_udp(frame)?;
-    if destination != Ipv4Addr::new(255, 255, 255, 255) || dhcp.len() < DHCP {
+    let (source, dhcp, _destination) = decode_udp(frame)?;
+    if dhcp.len() < DHCP {
         return Err(PacketError::Malformed);
     }
     if dhcp.get(0..3) != Some(&[2, 1, 6])
@@ -430,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn ack_accepts_zero_checksum_and_first_duplicate_option() {
+    fn ack_accepts_unicast_destination_and_zero_checksum() {
         let lease = 3600u32.to_be_bytes();
         let mask = [255, 255, 255, 0];
         let router = [192, 0, 2, 1];
@@ -447,18 +447,12 @@ mod tests {
                 (54, &[198, 51, 100, 1]),
             ],
         );
+        frame[ETH + 16..ETH + 20].copy_from_slice(&[192, 0, 2, 44]);
+        frame[ETH + 10..ETH + 12].fill(0);
+        let header_checksum = checksum(&frame[ETH..ETH + IP]).to_be_bytes();
+        frame[ETH + 10..ETH + 12].copy_from_slice(&header_checksum);
         frame[ETH + IP + 6..ETH + IP + 8].fill(0);
-        let reply = decode_reply(&frame, 7, MAC, ReplyKind::Ack).unwrap_or(DhcpReply {
-            xid: 0,
-            kind: ReplyKind::Offer,
-            address: Ipv4Addr::UNSPECIFIED,
-            source: Ipv4Addr::UNSPECIFIED,
-            server: None,
-            lease_seconds: None,
-            vendor_specific: None,
-            subnet_mask: None,
-            router: None,
-        });
+        let reply = decode_reply(&frame, 7, MAC, ReplyKind::Ack).expect("unicast ACK");
         assert_eq!(reply.server, Some(Ipv4Addr::new(192, 0, 2, 1)));
     }
 

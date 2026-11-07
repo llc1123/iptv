@@ -16,6 +16,7 @@ where
 {
     String::deserialize(deserializer)
 }
+
 fn deserialize_number_or_string<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
@@ -311,46 +312,5 @@ impl fmt::Debug for HlsAddress {
             .field("status", &self.status)
             .field("hls_url", &"[REDACTED]")
             .finish()
-    }
-}
-
-/// The three independent STB identity sources used by the client.
-#[derive(Clone, PartialEq, Eq)]
-pub struct StbIdentitySources {
-    /// Fixed request parameter sent to the boot-channel endpoint.
-    pub request_stbid: String,
-    /// Configured EPG STB identifier used during authentication.
-    pub configured_epg_stbid: String,
-    /// Configured DHCP identifier prefix.
-    pub dhcp_prefix: String,
-}
-
-impl fmt::Debug for StbIdentitySources {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("StbIdentitySources")
-            .field("request_stbid_present", &!self.request_stbid.is_empty())
-            .field(
-                "configured_epg_stbid_present",
-                &!self.configured_epg_stbid.is_empty(),
-            )
-            .field("dhcp_prefix_present", &!self.dhcp_prefix.is_empty())
-            .finish()
-    }
-}
-
-impl StbIdentitySources {
-    /// Creates a value while keeping each provider identity source distinct.
-    #[must_use]
-    pub fn new(
-        request_stbid: impl Into<String>,
-        configured_epg_stbid: impl Into<String>,
-        dhcp_prefix: impl Into<String>,
-    ) -> Self {
-        Self {
-            request_stbid: request_stbid.into(),
-            configured_epg_stbid: configured_epg_stbid.into(),
-            dhcp_prefix: dhcp_prefix.into(),
-        }
     }
 }

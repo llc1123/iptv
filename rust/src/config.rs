@@ -87,7 +87,7 @@ pub struct Config {
 
 impl Config {
     pub fn from_environment() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let config = Self::try_parse()?;
+        let config = Self::parse();
         for (value, name) in [
             (&config.dhcp_user, "IPTV_DHCP_USER"),
             (&config.dhcp_password, "IPTV_DHCP_PASSWORD"),

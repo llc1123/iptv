@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use reqwest::redirect::Policy;
 use reqwest::{Client, Response, Url};
+use ring::rand::{SecureRandom, SystemRandom};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -73,6 +74,8 @@ pub enum EpgError {
     Discovery,
     #[error("EPG response omitted {0}")]
     MissingField(&'static str),
+    #[error("EPG authentication nonce generation failed")]
+    Random,
     #[error("EPG provider rejected the request: {0}")]
     Provider(String),
     #[error("EPG response could not be parsed: {0}")]
@@ -177,8 +180,9 @@ impl EpgClient {
             )
             .await?;
         let login_body = login.text().await.map_err(EpgError::Http)?;
-        let encrypt_token =
-            extract(&login_body, "EncryptToken").ok_or(EpgError::MissingField("EncryptToken"))?;
+        let encrypt_token = extract(&login_body, "EncryptToken")
+            .filter(|value| !value.is_empty())
+            .ok_or(EpgError::MissingField("EncryptToken"))?;
         let authenticator = make_authenticator(&AuthenticatorInput {
             encrypt_token: &encrypt_token,
             user_id: &self.config.user_id,
@@ -187,7 +191,7 @@ impl EpgClient {
             mac: &self.config.stb_mac,
             password: &self.config.password,
             custom_str: "$CTC",
-            random_value: random_nonce(),
+            random_value: random_nonce()?,
         })
         .map_err(|_| EpgError::Provider("authentication failed".to_owned()))?;
         let validation_body = form(&[
@@ -221,10 +225,12 @@ impl EpgClient {
             )
             .await?;
         let body = validation.text().await.map_err(EpgError::Http)?;
-        let user_token =
-            extract_js_config(&body, "UserToken").ok_or(EpgError::MissingField("UserToken"))?;
-        let session_id =
-            extract_js_config(&body, "SessionID").ok_or(EpgError::MissingField("SessionID"))?;
+        let user_token = extract_js_config(&body, "UserToken")
+            .filter(|value| !value.is_empty())
+            .ok_or(EpgError::MissingField("UserToken"))?;
+        let session_id = extract_js_config(&body, "SessionID")
+            .filter(|value| !value.is_empty())
+            .ok_or(EpgError::MissingField("SessionID"))?;
         let share_key = extract_js_config(&body, "shareKey").unwrap_or_default();
         *session = Some(Session {
             origin: discovered,
@@ -306,8 +312,10 @@ impl EpgClient {
     /// Resolves a programme's TVOD playback address.
     pub async fn tvod_url(&self, programme: &Programme) -> Result<String, EpgError> {
         let session = self.ensure_session().await?;
-        let start_time = div_seconds(programme.start_time_ms);
-        let end_time = div_seconds(programme.end_time_ms);
+        let (start_seconds, end_seconds) = super::tvod_times_seconds(programme)
+            .map_err(|_| EpgError::Parse("tvod times".to_owned()))?;
+        let start_time = start_seconds.to_string();
+        let end_time = end_seconds.to_string();
         let body = self
             .post_form(
                 &session,
@@ -391,7 +399,12 @@ impl EpgClient {
             .append_pair("Mode", "MENU");
         let response = self.send(self.client.get(url)).await?;
         let mut origin = response.url().clone();
-        if origin.host_str().is_none() {
+        if !matches!(origin.scheme(), "http" | "https")
+            || origin.host_str().is_none()
+            || origin.port().is_none()
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+        {
             return Err(EpgError::Discovery);
         }
         origin.set_path("");
@@ -461,23 +474,28 @@ impl EpgClient {
     }
 
     async fn send(&self, request: reqwest::RequestBuilder) -> Result<Response, EpgError> {
-        let response = request.send().await.map_err(EpgError::Http)?;
-        if response.status().is_success() {
-            Ok(response)
-        } else {
-            Err(EpgError::Status(response.status().as_u16()))
+        let mut request = request;
+        for attempt in 0..=3 {
+            let retry = request.try_clone();
+            match request.send().await {
+                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) => return Err(EpgError::Status(response.status().as_u16())),
+                Err(error) if error.is_connect() && attempt < 3 => {
+                    request = retry.ok_or(EpgError::Http(error))?;
+                }
+                Err(error) => return Err(EpgError::Http(error)),
+            }
         }
+        Err(EpgError::Discovery)
     }
 }
 
-fn div_seconds(value: i64) -> String {
-    value.div_euclid(1_000).to_string()
-}
-
-fn random_nonce() -> u32 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.subsec_nanos() % 100_000_000)
+fn random_nonce() -> Result<u32, EpgError> {
+    let mut bytes = [0_u8; 8];
+    SystemRandom::new()
+        .fill(&mut bytes)
+        .map_err(|_| EpgError::Random)?;
+    u32::try_from(u64::from_be_bytes(bytes) % 100_000_000).map_err(|_| EpgError::Random)
 }
 
 fn form(fields: &[(&str, &str)]) -> String {
@@ -530,7 +548,9 @@ fn extract(body: &str, name: &str) -> Option<String> {
                 let end = body[index..]
                     .find(['&', '"', '\'', '<', '>', ' ', '\t', '\r', '\n'])
                     .map_or(body.len(), |offset| index + offset);
-                return Some(percent_decode(&body[index..end]));
+                if end > index {
+                    return Some(percent_decode(&body[index..end]));
+                }
             }
         }
         cursor = start + name.len();
@@ -539,12 +559,18 @@ fn extract(body: &str, name: &str) -> Option<String> {
 }
 
 fn extract_js_config(body: &str, name: &str) -> Option<String> {
-    ["CU", "CTC"].iter().find_map(|prefix| {
-        let marker = format!("{prefix}SetConfig('{name}','");
-        body.split_once(&marker)
-            .and_then(|(_, rest)| rest.split_once("')"))
-            .map(|(value, _)| value.to_owned())
-    })
+    ["CU", "CTC"]
+        .into_iter()
+        .filter_map(|prefix| {
+            let marker = format!("{prefix}SetConfig('{name}','");
+            body.find(&marker).map(|index| (index, marker))
+        })
+        .min_by_key(|(index, _)| *index)
+        .and_then(|(index, marker)| {
+            body[index + marker.len()..]
+                .split_once("')")
+                .map(|(value, _)| value.to_owned())
+        })
 }
 
 fn percent_decode(value: &str) -> String {
@@ -571,5 +597,30 @@ fn hex(value: u8) -> Option<u8> {
         b'a'..=b'f' => Some(value - b'a' + 10),
         b'A'..=b'F' => Some(value - b'A' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract, extract_js_config};
+
+    #[test]
+    fn extraction_matches_python_occurrence_and_empty_value_rules() {
+        assert_eq!(
+            extract_js_config(
+                "CTCSetConfig('UserToken','ctc');CUSetConfig('UserToken','cu')",
+                "UserToken"
+            ),
+            Some("ctc".to_owned())
+        );
+        assert_eq!(
+            extract("EncryptToken= &EncryptToken=abc", "EncryptToken"),
+            Some("abc".to_owned())
+        );
+        assert_eq!(extract("xEncryptToken=1", "EncryptToken"), None);
+        assert_eq!(
+            extract(";EncryptToken = \"abc\"", "EncryptToken"),
+            Some("abc".to_owned())
+        );
     }
 }

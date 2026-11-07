@@ -44,6 +44,8 @@ pub enum LinuxError {
     Timeout,
     #[error("Linux DHCP platform I/O failed")]
     Io,
+    #[error("DHCP server rejected the request (NAK)")]
+    Nak,
     #[error("Linux interface setup command failed")]
     Command,
     #[error("DHCP route override is invalid")]
@@ -250,7 +252,7 @@ impl LinuxPlatform {
             let reply = socket.receive(remaining)?;
             match packet::matching_reply(&reply, xid, mac, kind) {
                 Ok(true) => return Ok(reply),
-                Err(packet::PacketError::Nak) => return Err(LinuxError::Io),
+                Err(packet::PacketError::Nak) => return Err(LinuxError::Nak),
                 Ok(false) | Err(_) => {}
             }
         }

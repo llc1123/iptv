@@ -13,7 +13,7 @@ pub use channel_parser::{
 pub use client::{EpgClient, EpgConfig, EpgError, ProgrammeQuery};
 pub use models::{
     BootChannel, Channel, ChannelId, ChannelListResponse, EpgChannelId, HlsAddress, Programme,
-    ProgrammeResponse, StbIdentitySources, TvodAddress, TvodAddressResponse,
+    ProgrammeResponse, TvodAddress, TvodAddressResponse,
 };
 pub use programme_parser::{parse_programmes, parse_tvod, tvod_times_seconds};
 
