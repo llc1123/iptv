@@ -85,7 +85,7 @@ where
 }
 
 /// A channel returned by the provider's JSON endpoint.
-#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
     /// Optional provider authorization code.
@@ -114,23 +114,8 @@ pub struct Channel {
     pub media_id: String,
 }
 
-impl fmt::Debug for Channel {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("Channel")
-            .field("auth_code_present", &!self.auth_code.is_empty())
-            .field("code", &self.code)
-            .field("name", &self.name)
-            .field("is_charge", &self.is_charge)
-            .field("epg_id", &self.epg_id)
-            .field("mix_no", &self.mix_no)
-            .field("media_id", &self.media_id)
-            .finish()
-    }
-}
-
 /// A channel record from the boot response.
-#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct BootChannel {
     /// EPG identifier.
     #[serde(rename = "ChannelID", alias = "channel_id")]
@@ -165,25 +150,6 @@ pub struct BootChannel {
     /// First matching provider category title.
     #[serde(default)]
     pub group_title: String,
-}
-
-impl fmt::Debug for BootChannel {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("BootChannel")
-            .field("channel_id", &self.channel_id)
-            .field("name", &self.name)
-            .field("mix_no", &self.mix_no)
-            .field("channel_url_present", &!self.channel_url.is_empty())
-            .field("time_shift_url_present", &!self.time_shift_url.is_empty())
-            .field("channel_sdp_present", &!self.channel_sdp.is_empty())
-            .field("time_shift", &self.time_shift)
-            .field("time_shift_length", &self.time_shift_length)
-            .field("logo_url_present", &!self.logo_url.is_empty())
-            .field("code", &self.code)
-            .field("group_title", &self.group_title)
-            .finish()
-    }
 }
 
 /// A programme returned by the provider.
