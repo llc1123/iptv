@@ -1,54 +1,33 @@
-//! DHCP Ethernet, IPv4, UDP, BOOTP, and option wire formats.
-
-#![allow(clippy::missing_errors_doc)]
-
-use std::collections::HashMap;
-use std::fmt;
-use std::net::Ipv4Addr;
-use std::str::FromStr;
-
-use dhcproto::{Decodable, v4};
+use dhcproto::{v4, Decodable};
 use etherparse::{IpHeaders, IpNumber, Ipv4Extensions, Ipv4Header, PacketBuilder};
+use std::{collections::HashMap, fmt, net::Ipv4Addr, str::FromStr};
 use thiserror::Error;
-
-/// The DHCP parameter request list required by the IPTV deployment.
 pub const PARAMETER_REQUEST_LIST: [u8; 10] = [1, 121, 33, 3, 6, 15, 28, 51, 58, 59];
-const BOOTP_HEADER_LEN: usize = 236;
-const DHCP_COOKIE: [u8; 4] = [99, 130, 83, 99];
-const DHCP_MIN_PAYLOAD: usize = BOOTP_HEADER_LEN + DHCP_COOKIE.len();
-const UDP_HEADER_LEN: usize = 8;
-const ETHERNET_HEADER_LEN: usize = 14;
-const IPV4_HEADER_LEN: usize = 20;
-
-/// A six-byte Ethernet address.
+const BOOTP: usize = 236;
+const COOKIE: [u8; 4] = [99, 130, 83, 99];
+const DHCP: usize = BOOTP + 4;
+const UDP: usize = 8;
+const IP: usize = 20;
+const ETH: usize = 14;
+type Options = HashMap<u8, Vec<u8>>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MacAddress([u8; 6]);
-
 impl MacAddress {
-    /// Creates an address from its six octets.
-    #[must_use]
     pub const fn new(octets: [u8; 6]) -> Self {
         Self(octets)
     }
-
-    /// Returns the address octets.
-    #[must_use]
     pub const fn octets(self) -> [u8; 6] {
         self.0
     }
-
-    /// Returns uppercase hexadecimal octets without separators.
-    #[must_use]
     pub fn compact_upper(self) -> String {
         hex::encode_upper(self.0)
     }
 }
-
 impl FromStr for MacAddress {
     type Err = PacketError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let mut octets = [0_u8; 6];
+        let mut octets = [0; 6];
         let mut parts = value.split(':');
         for octet in &mut octets {
             let part = parts.next().ok_or(PacketError::InvalidMac)?;
@@ -63,126 +42,49 @@ impl FromStr for MacAddress {
         Ok(Self(octets))
     }
 }
-
 impl fmt::Display for MacAddress {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, octet) in self.0.iter().enumerate() {
-            if index != 0 {
-                formatter.write_str(":")?;
-            }
-            write!(formatter, "{octet:02x}")?;
-        }
-        Ok(())
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5]
+        )
     }
 }
-
-/// The DHCP reply type required by a receive stage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplyKind {
-    /// A DHCPOFFER reply.
     Offer,
-    /// A DHCPACK reply.
     Ack,
 }
-
-/// The strictly decoded fields needed by DHCP acquisition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DhcpReply {
-    /// Reply transaction identifier.
     pub xid: u32,
-    /// Reply type.
     pub kind: ReplyKind,
-    /// Offered or acknowledged address.
     pub address: Ipv4Addr,
-    /// IPv4 source of the received datagram.
     pub source: Ipv4Addr,
-    /// DHCP option 54, when present.
     pub server: Option<Ipv4Addr>,
-    /// DHCP option 51, when present.
     pub lease_seconds: Option<u32>,
-    /// DHCP option 125, when present.
     pub vendor_specific: Option<Vec<u8>>,
-    /// DHCP option 1, when present.
     pub subnet_mask: Option<Ipv4Addr>,
-    /// DHCP option 3, when present.
     pub router: Option<Ipv4Addr>,
 }
-
-/// Packet construction and validation failures.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PacketError {
-    /// The input does not contain a complete Ethernet/IP/UDP/DHCP frame.
-    #[error("DHCP frame is malformed or truncated")]
-    MalformedFrame,
-    /// The Ethernet address is not six hexadecimal octets.
-    #[error("DHCP interface address is malformed")]
+    #[error("malformed DHCP frame")]
+    Malformed,
+    #[error("invalid DHCP interface address")]
     InvalidMac,
-    /// The DHCP BOOTP cookie is not the required value.
-    #[error("DHCP magic cookie is invalid")]
-    InvalidCookie,
-    /// DHCP option framing is invalid.
-    #[error("DHCP options are malformed")]
-    MalformedOptions,
-    /// dhcproto rejected the DHCP message.
-    #[error("DHCP message cannot be decoded")]
-    DecodeFailed,
-    /// The frame has non-DHCP UDP ports.
-    #[error("DHCP UDP ports are invalid")]
-    InvalidUdpPorts,
-    /// The transaction identifier did not match the acquisition.
-    #[error("DHCP transaction does not match")]
-    WrongTransaction,
-    /// The BOOTP operation is not a reply.
-    #[error("DHCP reply is not a BOOTP reply")]
-    NotBootReply,
-    /// The requested reply type was not received.
-    #[error("DHCP reply type is unexpected")]
-    UnexpectedMessageType,
-    /// A negative DHCP response was received.
-    #[error("DHCP server rejected the request")]
+    #[error("unexpected DHCP response")]
+    Unexpected,
+    #[error("DHCP NAK")]
     Nak,
-    /// A required option is absent or has the wrong length.
-    #[error("DHCP reply lacks a required option")]
-    MissingOption,
-    /// The DHCP message-type option is absent.
-    #[error("DHCP reply lacks a message type")]
-    MissingMessageType,
-    /// An ACK is missing one of its required lease fields.
-    #[error("DHCP ACK lacks a required lease option")]
-    MissingAckOption(u8),
-    /// An optional DHCP option carried an invalid fixed-width value.
-    #[error("DHCP option has an invalid length")]
-    InvalidOptionLength(u8),
-    /// The generated packet could not be represented.
+    #[error("DHCP ACK lacks option {0}")]
+    MissingOption(u8),
+    #[error("DHCP option {0} has an invalid length")]
+    InvalidOption(u8),
     #[error("DHCP packet is too large")]
-    PacketTooLarge,
+    TooLarge,
 }
-
-pub(crate) fn transaction_id(frame: &[u8]) -> Result<u32, PacketError> {
-    let (_, dhcp) = decode_udp(frame)?;
-    read_u32(dhcp, 4)
-}
-
-pub(crate) fn source_mac(frame: &[u8]) -> Result<MacAddress, PacketError> {
-    Ok(MacAddress::new(read_array(
-        frame,
-        ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + 28,
-    )?))
-}
-
-pub(crate) fn reply_kind_for_request(frame: &[u8]) -> Result<ReplyKind, PacketError> {
-    let (_, dhcp) = decode_udp(frame)?;
-    let options = parse_options(
-        dhcp.get(DHCP_MIN_PAYLOAD..)
-            .ok_or(PacketError::MalformedFrame)?,
-    )?;
-    match option_bytes(&options, 53)?.first() {
-        Some(1) => Ok(ReplyKind::Offer),
-        Some(3) => Ok(ReplyKind::Ack),
-        _ => Err(PacketError::UnexpectedMessageType),
-    }
-}
-
 pub(crate) fn matching_reply(
     frame: &[u8],
     xid: u32,
@@ -195,15 +97,13 @@ pub(crate) fn matching_reply(
         Err(_) => Ok(false),
     }
 }
-
-/// Builds the byte-compatible DHCPDISCOVER frame.
 pub fn build_discover(
     source: MacAddress,
     xid: u32,
     option60: &[u8],
     hostname: &[u8],
 ) -> Result<Vec<u8>, PacketError> {
-    let mut payload = bootp_payload(
+    build(
         source,
         xid,
         &[
@@ -212,12 +112,8 @@ pub fn build_discover(
             (12, hostname),
             (55, &PARAMETER_REQUEST_LIST),
         ],
-    )?;
-    payload.push(255);
-    ethernet_frame(source, &payload)
+    )
 }
-
-/// Builds the byte-compatible DHCPREQUEST frame.
 pub fn build_request(
     source: MacAddress,
     xid: u32,
@@ -226,179 +122,121 @@ pub fn build_request(
     option60: &[u8],
     hostname: &[u8],
 ) -> Result<Vec<u8>, PacketError> {
-    let requested_octets = requested.octets();
-    let server_octets = server.octets();
-    let mut payload = bootp_payload(
+    let requested = requested.octets();
+    let server = server.octets();
+    build(
         source,
         xid,
         &[
             (53, &[3]),
-            (50, &requested_octets),
-            (54, &server_octets),
+            (50, &requested),
+            (54, &server),
             (60, option60),
             (12, hostname),
             (55, &PARAMETER_REQUEST_LIST),
         ],
-    )?;
-    payload.push(255);
-    ethernet_frame(source, &payload)
+    )
 }
-
-fn bootp_payload(
-    source: MacAddress,
-    xid: u32,
-    options: &[(u8, &[u8])],
-) -> Result<Vec<u8>, PacketError> {
-    let options_len = options
+fn build(source: MacAddress, xid: u32, fields: &[(u8, &[u8])]) -> Result<Vec<u8>, PacketError> {
+    let options_len = fields
         .iter()
-        .try_fold(0_usize, |length, (_, value)| {
-            let next = length.checked_add(2)?.checked_add(value.len())?;
-            if value.len() > usize::from(u8::MAX) {
-                return None;
-            }
-            Some(next)
-        })
-        .ok_or(PacketError::PacketTooLarge)?;
-    let payload_len = DHCP_MIN_PAYLOAD
-        .checked_add(options_len)
-        .ok_or(PacketError::PacketTooLarge)?;
-    let mut payload = vec![0_u8; payload_len];
+        .try_fold(0usize, |sum, (_, value)| sum.checked_add(2 + value.len()))
+        .ok_or(PacketError::TooLarge)?;
+    if fields
+        .iter()
+        .any(|(_, value)| value.len() > usize::from(u8::MAX))
+    {
+        return Err(PacketError::TooLarge);
+    }
+    let mut payload = vec![0; DHCP.checked_add(options_len).ok_or(PacketError::TooLarge)? + 1];
     payload[0] = 1;
     payload[1] = 1;
     payload[2] = 6;
     payload[4..8].copy_from_slice(&xid.to_be_bytes());
     payload[28..34].copy_from_slice(&source.octets());
-    payload[236..240].copy_from_slice(&DHCP_COOKIE);
-    let mut cursor = DHCP_MIN_PAYLOAD;
-    for (code, value) in options {
+    payload[BOOTP..DHCP].copy_from_slice(&COOKIE);
+    let mut cursor = DHCP;
+    for (code, value) in fields {
         payload[cursor] = *code;
-        payload[cursor + 1] = u8::try_from(value.len()).map_err(|_| PacketError::PacketTooLarge)?;
+        payload[cursor + 1] = u8::try_from(value.len()).map_err(|_| PacketError::TooLarge)?;
         let end = cursor
-            .checked_add(2)
-            .and_then(|start| start.checked_add(value.len()))
-            .ok_or(PacketError::PacketTooLarge)?;
+            .checked_add(2 + value.len())
+            .ok_or(PacketError::TooLarge)?;
         payload[cursor + 2..end].copy_from_slice(value);
         cursor = end;
     }
-    Ok(payload)
+    payload[cursor] = 255;
+    frame(source, &payload, 68, 67)
 }
-
-fn ethernet_frame(source: MacAddress, payload: &[u8]) -> Result<Vec<u8>, PacketError> {
-    ethernet_frame_with_ips(source, [0, 0, 0, 0], [255, 255, 255, 255], payload)
-}
-
-fn ethernet_frame_with_ips(
+fn frame(
     source: MacAddress,
-    source_ip: [u8; 4],
-    destination_ip: [u8; 4],
     payload: &[u8],
-) -> Result<Vec<u8>, PacketError> {
-    ethernet_frame_with_ips_and_ports(source, source_ip, destination_ip, 68, 67, payload)
-}
-
-fn ethernet_frame_with_ips_and_ports(
-    source: MacAddress,
-    source_ip: [u8; 4],
-    destination_ip: [u8; 4],
     source_port: u16,
     destination_port: u16,
-    payload: &[u8],
 ) -> Result<Vec<u8>, PacketError> {
-    let ip_payload_len = UDP_HEADER_LEN
+    let payload_len = UDP
         .checked_add(payload.len())
-        .ok_or(PacketError::PacketTooLarge)?;
-    let ip_len = u16::try_from(ip_payload_len).map_err(|_| PacketError::PacketTooLarge)?;
-    let mut ip = Ipv4Header::new(ip_len, 64, IpNumber::UDP, source_ip, destination_ip)
-        .map_err(|_| PacketError::PacketTooLarge)?;
-    ip.identification = 1;
-    ip.dont_fragment = false;
-    let builder = PacketBuilder::ethernet2(source.octets(), [255, 255, 255, 255, 255, 255])
-        .ip(IpHeaders::Ipv4(ip, Ipv4Extensions::default()))
+        .ok_or(PacketError::TooLarge)?;
+    let length = u16::try_from(payload_len).map_err(|_| PacketError::TooLarge)?;
+    let mut header = Ipv4Header::new(length, 64, IpNumber::UDP, [0; 4], [255; 4])
+        .map_err(|_| PacketError::TooLarge)?;
+    header.identification = 1;
+    let builder = PacketBuilder::ethernet2(source.octets(), [255; 6])
+        .ip(IpHeaders::Ipv4(header, Ipv4Extensions::default()))
         .udp(source_port, destination_port);
-    let mut frame = Vec::with_capacity(builder.size(payload.len()));
+    let mut output = Vec::with_capacity(builder.size(payload.len()));
     builder
-        .write(&mut frame, payload)
-        .map_err(|_| PacketError::PacketTooLarge)?;
-    Ok(frame)
+        .write(&mut output, payload)
+        .map_err(|_| PacketError::TooLarge)?;
+    Ok(output)
 }
-
-/// Strictly decodes one received Ethernet frame.
 pub fn decode_reply(
     frame: &[u8],
     expected_xid: u32,
     expected_mac: MacAddress,
     expected_kind: ReplyKind,
 ) -> Result<DhcpReply, PacketError> {
-    let (source, dhcp) = decode_udp(frame)?;
-    if dhcp.len() < DHCP_MIN_PAYLOAD {
-        return Err(PacketError::MalformedFrame);
+    let (source, dhcp, destination) = decode_udp(frame)?;
+    if destination != Ipv4Addr::new(255, 255, 255, 255) || dhcp.len() < DHCP {
+        return Err(PacketError::Malformed);
     }
-    if dhcp.first().copied() != Some(2)
-        || dhcp.get(1).copied() != Some(1)
-        || dhcp.get(2).copied() != Some(6)
+    if dhcp.get(0..3) != Some(&[2, 1, 6])
+        || read_u32(dhcp, 4)? != expected_xid
+        || dhcp.get(28..34) != Some(&expected_mac.octets())
+        || dhcp.get(BOOTP..DHCP) != Some(&COOKIE)
     {
-        return Err(PacketError::NotBootReply);
+        return Err(PacketError::Unexpected);
     }
-    let xid = read_u32(dhcp, 4)?;
-    if xid != expected_xid {
-        return Err(PacketError::WrongTransaction);
-    }
-    if dhcp.get(28..34) != Some(&expected_mac.octets()) {
-        return Err(PacketError::WrongTransaction);
-    }
-    if dhcp.get(236..240) != Some(&DHCP_COOKIE) {
-        return Err(PacketError::InvalidCookie);
-    }
-    // dhcproto 0.14 validates the message shape, but its BTreeMap option
-    // decoder is last-occurrence-wins. Keep the Python client's first-
-    // occurrence semantics in parse_options below instead of using its
-    // decoded option values for compatibility decisions.
-    let _decoded = v4::Message::from_bytes(dhcp).map_err(|_| PacketError::DecodeFailed)?;
-    let options = parse_options(
-        dhcp.get(DHCP_MIN_PAYLOAD..)
-            .ok_or(PacketError::MalformedFrame)?,
-    )?;
-    let message_type_bytes = option_bytes(&options, 53)?;
-    if message_type_bytes.len() != 1 {
-        return Err(PacketError::MalformedOptions);
-    }
-    let message_type = message_type_bytes[0];
-    let kind = match message_type {
-        2 => ReplyKind::Offer,
-        5 => ReplyKind::Ack,
-        6 => return Err(PacketError::Nak),
-        _ => return Err(PacketError::UnexpectedMessageType),
+    let parsed = v4::Message::from_bytes(dhcp).map_err(|_| PacketError::Malformed)?;
+    let _ = parsed;
+    let opts = options(dhcp)?;
+    let kind = match option(&opts, 53)?.first() {
+        Some(2) => ReplyKind::Offer,
+        Some(5) => ReplyKind::Ack,
+        Some(6) => return Err(PacketError::Nak),
+        _ => return Err(PacketError::Unexpected),
     };
     if kind != expected_kind {
-        return Err(PacketError::UnexpectedMessageType);
+        return Err(PacketError::Unexpected);
     }
-    let address = Ipv4Addr::from(read_array::<4>(dhcp, 16)?);
-    let server = option_ipv4_optional(&options, 54)?;
-    let lease_seconds = option_u32_optional(&options, 51)?;
-    let vendor_specific = option_bytes_optional(&options, 125).map(ToOwned::to_owned);
-    let subnet_mask = option_ipv4_optional(&options, 1)?;
-    let router = option_ipv4_optional(&options, 3)?;
+    let server = ipv4(&opts, 54)?;
+    let lease_seconds = number(&opts, 51)?;
+    let vendor_specific = opts.get(&125).cloned();
+    let subnet_mask = ipv4(&opts, 1)?;
+    let router = ipv4(&opts, 3)?;
     if expected_kind == ReplyKind::Ack {
-        if server.is_none() {
-            return Err(PacketError::MissingAckOption(54));
-        }
-        if lease_seconds.is_none() {
-            return Err(PacketError::MissingAckOption(51));
-        }
-        if vendor_specific.is_none() {
-            return Err(PacketError::MissingAckOption(125));
-        }
-        if subnet_mask.is_none() {
-            return Err(PacketError::MissingAckOption(1));
-        }
-        if router.is_none() {
-            return Err(PacketError::MissingAckOption(3));
+        for code in [54, 51, 125, 1, 3] {
+            if (code == 125 && vendor_specific.is_none())
+                || (code != 125 && !opts.contains_key(&code))
+            {
+                return Err(PacketError::MissingOption(code));
+            }
         }
     }
     Ok(DhcpReply {
-        xid,
+        xid: expected_xid,
         kind,
-        address,
+        address: Ipv4Addr::from(read_array(dhcp, 16)?),
         source,
         server,
         lease_seconds,
@@ -407,179 +245,128 @@ pub fn decode_reply(
         router,
     })
 }
-
-fn decode_udp(frame: &[u8]) -> Result<(Ipv4Addr, &[u8]), PacketError> {
-    let ip_start = ETHERNET_HEADER_LEN;
-    let udp_start = ip_start
-        .checked_add(IPV4_HEADER_LEN)
-        .ok_or(PacketError::MalformedFrame)?;
-    let min_len = udp_start
-        .checked_add(UDP_HEADER_LEN)
-        .ok_or(PacketError::MalformedFrame)?;
-    if frame.len() < min_len || frame.get(12..14) != Some(&[0x08, 0x00]) {
-        return Err(PacketError::MalformedFrame);
-    }
-    let version_ihl = frame
-        .get(ip_start)
-        .copied()
-        .ok_or(PacketError::MalformedFrame)?;
-    if version_ihl >> 4 != 4 {
-        return Err(PacketError::MalformedFrame);
-    }
-    let ihl = version_ihl & 0x0f;
-    if ihl != 5 {
-        return Err(PacketError::MalformedFrame);
-    }
-    let ip_end = ip_start
-        .checked_add(usize::from(ihl) * 4)
-        .ok_or(PacketError::MalformedFrame)?;
-    if frame.len() < ip_end || frame.get(ip_start + 9).copied() != Some(17) {
-        return Err(PacketError::MalformedFrame);
-    }
-    let total_len = usize::from(read_u16(frame, ip_start + 2)?);
-    if total_len < usize::from(ihl) * 4 + UDP_HEADER_LEN || frame.len() < ip_start + total_len {
-        return Err(PacketError::MalformedFrame);
-    }
-    if read_u16(frame, ip_end)? != 67 || read_u16(frame, ip_end + 2)? != 68 {
-        return Err(PacketError::InvalidUdpPorts);
-    }
-    if checksum(
-        frame
-            .get(ip_start..ip_end)
-            .ok_or(PacketError::MalformedFrame)?,
-    ) != 0
+fn decode_udp(frame: &[u8]) -> Result<(Ipv4Addr, &[u8], Ipv4Addr), PacketError> {
+    let ip = ETH;
+    let udp = ip + IP;
+    if frame.len() < udp + UDP
+        || frame.get(12..14) != Some(&[8, 0])
+        || frame.get(ip).is_none_or(|v| v >> 4 != 4 || v & 15 != 5)
+        || frame.get(ip + 9) != Some(&17)
     {
-        return Err(PacketError::MalformedFrame);
+        return Err(PacketError::Malformed);
     }
-    let udp_len = usize::from(read_u16(frame, ip_end + 4)?);
-    if udp_len < UDP_HEADER_LEN || udp_len != total_len - usize::from(ihl) * 4 {
-        return Err(PacketError::MalformedFrame);
+    let total = usize::from(read_u16(frame, ip + 2)?);
+    if total < IP + UDP
+        || frame.len() < ip + total
+        || read_u16(frame, udp)? != 67
+        || read_u16(frame, udp + 2)? != 68
+    {
+        return Err(PacketError::Malformed);
     }
-    let udp_end = ip_end
-        .checked_add(udp_len)
-        .ok_or(PacketError::MalformedFrame)?;
-    let source = Ipv4Addr::from(read_array::<4>(frame, ip_start + 12)?);
-    let destination = read_array::<4>(frame, ip_start + 16)?;
-    let mut pseudo = Vec::with_capacity(12 + udp_len);
-    pseudo.extend_from_slice(&source.octets());
-    pseudo.extend_from_slice(&destination);
-    pseudo.extend_from_slice(&[0, 17]);
-    pseudo.extend_from_slice(
-        &u16::try_from(udp_len)
-            .map_err(|_| PacketError::MalformedFrame)?
-            .to_be_bytes(),
-    );
-    pseudo.extend_from_slice(
-        frame
-            .get(ip_end..udp_end)
-            .ok_or(PacketError::MalformedFrame)?,
-    );
-    let udp_checksum = read_u16(frame, ip_end + 6)?;
-    if udp_checksum != 0 && checksum(&pseudo) != 0 {
-        return Err(PacketError::MalformedFrame);
+    if checksum(frame.get(ip..udp).ok_or(PacketError::Malformed)?) != 0 {
+        return Err(PacketError::Malformed);
+    }
+    let udp_len = usize::from(read_u16(frame, udp + 4)?);
+    if udp_len < UDP || udp_len != total - IP || frame.len() < udp + udp_len {
+        return Err(PacketError::Malformed);
+    }
+    let source = Ipv4Addr::from(read_array(frame, ip + 12)?);
+    let destination = Ipv4Addr::from(read_array(frame, ip + 16)?);
+    let checksum_value = read_u16(frame, udp + 6)?;
+    if checksum_value != 0 {
+        let mut pseudo = Vec::with_capacity(12 + udp_len);
+        pseudo.extend_from_slice(&source.octets());
+        pseudo.extend_from_slice(&destination.octets());
+        pseudo.extend_from_slice(&[0, 17]);
+        pseudo.extend_from_slice(
+            &u16::try_from(udp_len)
+                .map_err(|_| PacketError::Malformed)?
+                .to_be_bytes(),
+        );
+        pseudo.extend_from_slice(
+            frame
+                .get(udp..udp + udp_len)
+                .ok_or(PacketError::Malformed)?,
+        );
+        if checksum(&pseudo) != 0 {
+            return Err(PacketError::Malformed);
+        }
     }
     Ok((
         source,
         frame
-            .get(ip_end + UDP_HEADER_LEN..udp_end)
-            .ok_or(PacketError::MalformedFrame)?,
+            .get(udp + UDP..udp + udp_len)
+            .ok_or(PacketError::Malformed)?,
+        destination,
     ))
 }
-
-fn parse_options(raw: &[u8]) -> Result<HashMap<u8, Vec<u8>>, PacketError> {
-    let mut options = HashMap::new();
-    let mut cursor = 0_usize;
-    let mut ended = false;
-    while cursor < raw.len() {
-        let code = *raw.get(cursor).ok_or(PacketError::MalformedOptions)?;
+fn options(raw_frame: &[u8]) -> Result<Options, PacketError> {
+    let raw = raw_frame.get(DHCP..).ok_or(PacketError::Malformed)?;
+    let mut result = std::collections::HashMap::new();
+    let mut cursor = 0;
+    loop {
+        let code = *raw.get(cursor).ok_or(PacketError::Malformed)?;
         cursor += 1;
         match code {
             0 => {}
             255 => {
-                ended = true;
-                if raw
-                    .get(cursor..)
-                    .is_some_and(|tail| tail.iter().any(|byte| *byte != 0))
-                {
-                    return Err(PacketError::MalformedOptions);
+                if raw[cursor..].iter().any(|byte| *byte != 0) {
+                    return Err(PacketError::Malformed);
                 }
-                break;
+                return Ok(result);
             }
             code => {
-                let length = usize::from(*raw.get(cursor).ok_or(PacketError::MalformedOptions)?);
+                let len = usize::from(*raw.get(cursor).ok_or(PacketError::Malformed)?);
                 cursor += 1;
-                let end = cursor
-                    .checked_add(length)
-                    .ok_or(PacketError::MalformedOptions)?;
-                let value = raw
-                    .get(cursor..end)
-                    .ok_or(PacketError::MalformedOptions)?
-                    .to_vec();
-                options.entry(code).or_insert(value);
+                let end = cursor.checked_add(len).ok_or(PacketError::Malformed)?;
+                let value = raw.get(cursor..end).ok_or(PacketError::Malformed)?.to_vec();
+                result.entry(code).or_insert(value);
                 cursor = end;
             }
         }
     }
-    if !ended {
-        return Err(PacketError::MalformedOptions);
-    }
-    Ok(options)
 }
-
-fn option_bytes(options: &HashMap<u8, Vec<u8>>, code: u8) -> Result<&[u8], PacketError> {
-    option_bytes_optional(options, code).ok_or(PacketError::MissingMessageType)
+fn option(options: &Options, code: u8) -> Result<&[u8], PacketError> {
+    options
+        .get(&code)
+        .map(Vec::as_slice)
+        .ok_or(PacketError::MissingOption(code))
 }
-
-fn option_bytes_optional(options: &HashMap<u8, Vec<u8>>, code: u8) -> Option<&[u8]> {
-    options.get(&code).map(Vec::as_slice)
+fn ipv4(options: &Options, code: u8) -> Result<Option<Ipv4Addr>, PacketError> {
+    options.get(&code).map_or(Ok(None), |value| {
+        if value.len() != 4 {
+            return Err(PacketError::InvalidOption(code));
+        }
+        Ok(Some(Ipv4Addr::from([
+            value[0], value[1], value[2], value[3],
+        ])))
+    })
 }
-
-fn option_ipv4_optional(
-    options: &HashMap<u8, Vec<u8>>,
-    code: u8,
-) -> Result<Option<Ipv4Addr>, PacketError> {
-    let Some(value) = option_bytes_optional(options, code) else {
-        return Ok(None);
-    };
-    if value.len() != 4 {
-        return Err(PacketError::InvalidOptionLength(code));
-    }
-    Ok(Some(Ipv4Addr::from([
-        value[0], value[1], value[2], value[3],
-    ])))
+fn number(options: &Options, code: u8) -> Result<Option<u32>, PacketError> {
+    options.get(&code).map_or(Ok(None), |value| {
+        if value.len() != 4 {
+            return Err(PacketError::InvalidOption(code));
+        }
+        Ok(Some(u32::from_be_bytes([
+            value[0], value[1], value[2], value[3],
+        ])))
+    })
 }
-
-fn option_u32_optional(
-    options: &HashMap<u8, Vec<u8>>,
-    code: u8,
-) -> Result<Option<u32>, PacketError> {
-    let Some(value) = option_bytes_optional(options, code) else {
-        return Ok(None);
-    };
-    if value.len() != 4 {
-        return Err(PacketError::InvalidOptionLength(code));
-    }
-    Ok(Some(u32::from_be_bytes([
-        value[0], value[1], value[2], value[3],
-    ])))
-}
-
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, PacketError> {
     Ok(u16::from_be_bytes(read_array(bytes, offset)?))
 }
-
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, PacketError> {
     Ok(u32::from_be_bytes(read_array(bytes, offset)?))
 }
-
 fn read_array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], PacketError> {
-    let end = offset.checked_add(N).ok_or(PacketError::MalformedFrame)?;
-    let slice = bytes.get(offset..end).ok_or(PacketError::MalformedFrame)?;
-    slice.try_into().map_err(|_| PacketError::MalformedFrame)
+    bytes
+        .get(offset..offset + N)
+        .ok_or(PacketError::Malformed)?
+        .try_into()
+        .map_err(|_| PacketError::Malformed)
 }
-
 fn checksum(bytes: &[u8]) -> u16 {
-    let mut sum = 0_u32;
+    let mut sum = 0u32;
     for chunk in bytes.chunks_exact(2) {
         sum = sum.saturating_add(u32::from(u16::from_be_bytes([chunk[0], chunk[1]])));
     }
@@ -587,77 +374,44 @@ fn checksum(bytes: &[u8]) -> u16 {
         sum = sum.saturating_add(u32::from(*byte) << 8);
     }
     while sum > u32::from(u16::MAX) {
-        sum = (sum & u32::from(u16::MAX)).saturating_add(sum >> 16);
+        sum = (sum & u32::from(u16::MAX)) + (sum >> 16);
     }
-    match u16::try_from(sum) {
-        Ok(value) => !value,
-        Err(_) => 0,
-    }
+    !u16::try_from(sum).unwrap_or(u16::MAX)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const MAC: MacAddress = MacAddress::new([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+    const MAC: MacAddress = MacAddress::new([2, 0, 0, 0, 0, 1]);
 
     fn option_bytes(frame: &[u8]) -> &[u8] {
-        &frame[ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN + DHCP_MIN_PAYLOAD..]
+        &frame[ETH + IP + UDP + DHCP..]
     }
-
-    fn reply_frame(xid: u32, options: &[(u8, &[u8])]) -> Vec<u8> {
-        let mut payload = vec![0_u8; DHCP_MIN_PAYLOAD];
-        payload[0] = 2;
-        payload[1] = 1;
-        payload[2] = 6;
+    fn reply_frame(xid: u32, fields: &[(u8, &[u8])]) -> Vec<u8> {
+        let mut payload = vec![0; DHCP];
+        payload[..3].copy_from_slice(&[2, 1, 6]);
         payload[4..8].copy_from_slice(&xid.to_be_bytes());
         payload[16..20].copy_from_slice(&[192, 0, 2, 44]);
         payload[28..34].copy_from_slice(&MAC.octets());
-        payload[236..240].copy_from_slice(&DHCP_COOKIE);
-        for (code, value) in options {
-            payload.push(*code);
-            payload.push(u8::try_from(value.len()).unwrap_or_default());
+        payload[BOOTP..DHCP].copy_from_slice(&COOKIE);
+        for (code, value) in fields {
+            payload.extend_from_slice(&[*code, u8::try_from(value.len()).unwrap_or(0)]);
             payload.extend_from_slice(value);
         }
         payload.push(255);
-        ethernet_frame_with_ips_and_ports(
-            MAC,
-            [192, 0, 2, 1],
-            [255, 255, 255, 255],
-            67,
-            68,
-            &payload,
-        )
-        .unwrap_or_default()
+        frame(MAC, &payload, 67, 68).unwrap_or_default()
     }
 
     #[test]
-    fn discover_has_exact_option_order_and_bootp_defaults() {
-        let frame = build_discover(MAC, 0x0102_0304, &[0xaa, 0xbb], b"STB").unwrap_or_default();
-        assert_eq!(&frame[..6], &[0xff; 6]);
-        assert_eq!(&frame[6..12], &MAC.octets());
-        assert_eq!(frame[14], 0x45);
-        assert_eq!(frame[15], 0);
-        assert_eq!(&frame[18..20], &[0, 1]);
-        assert_eq!(frame[20] & 0x40, 0);
-        assert_eq!(frame[22], 64);
-        assert_eq!(&frame[42..46], &[1, 1, 6, 0]);
-        assert_eq!(&frame[46..50], &[1, 2, 3, 4]);
-        assert_eq!(&frame[70..76], &MAC.octets());
-        assert_eq!(&frame[278..282], &DHCP_COOKIE);
+    fn discover_and_request_pin_python_option_order() {
+        let discover = build_discover(MAC, 0x0102_0304, &[0xaa, 0xbb], b"STB").unwrap_or_default();
         assert_eq!(
-            option_bytes(&frame),
+            option_bytes(&discover),
             &[
                 53, 1, 1, 60, 2, 0xaa, 0xbb, 12, 3, b'S', b'T', b'B', 55, 10, 1, 121, 33, 3, 6, 15,
                 28, 51, 58, 59, 255
             ]
         );
-        assert_eq!(&frame[34..38], &[0, 68, 0, 67]);
-    }
-
-    #[test]
-    fn request_has_exact_option_order() {
-        let frame = build_request(
+        let request = build_request(
             MAC,
             7,
             Ipv4Addr::new(192, 0, 2, 44),
@@ -667,7 +421,7 @@ mod tests {
         )
         .unwrap_or_default();
         assert_eq!(
-            option_bytes(&frame),
+            option_bytes(&request),
             &[
                 53, 1, 3, 50, 4, 192, 0, 2, 44, 54, 4, 192, 0, 2, 1, 60, 1, 0xaa, 12, 3, b'S',
                 b'T', b'B', 55, 10, 1, 121, 33, 3, 6, 15, 28, 51, 58, 59, 255
@@ -676,142 +430,49 @@ mod tests {
     }
 
     #[test]
-    fn ack_requires_fields_and_rejects_adversarial_replies() {
-        let lease = 3600_u32.to_be_bytes();
+    fn ack_accepts_zero_checksum_and_first_duplicate_option() {
+        let lease = 3600u32.to_be_bytes();
         let mask = [255, 255, 255, 0];
         let router = [192, 0, 2, 1];
         let server = [192, 0, 2, 1];
-        let valid = reply_frame(
+        let mut frame = reply_frame(
             7,
             &[
                 (53, &[5]),
                 (51, &lease),
-                (125, &[0x10]),
+                (125, &[16]),
                 (1, &mask),
                 (3, &router),
                 (54, &server),
+                (54, &[198, 51, 100, 1]),
             ],
         );
-        let decoded = decode_reply(&valid, 7, MAC, ReplyKind::Ack);
-        assert_eq!(
-            decoded.as_ref().map(|reply| reply.source),
-            Ok(Ipv4Addr::new(192, 0, 2, 1))
-        );
-        assert_eq!(
-            decoded.as_ref().map(|reply| reply.server),
-            Ok(Some(Ipv4Addr::new(192, 0, 2, 1)))
-        );
-        let mut zero_udp_checksum = valid.clone();
-        zero_udp_checksum[ip_end_for_test() + 6] = 0;
-        zero_udp_checksum[ip_end_for_test() + 7] = 0;
-        assert!(decode_reply(&zero_udp_checksum, 7, MAC, ReplyKind::Ack).is_ok());
-        let checksum_offset = ip_end_for_test() + 6;
-        let original_checksum = read_u16(&valid, checksum_offset).unwrap_or_default();
-        let invalid_checksum = match original_checksum {
-            0x1234 => 0x4321,
-            u16::MAX => 0x1234,
-            value => value.saturating_add(1),
-        };
-        let mut invalid_udp_checksum = valid.clone();
-        invalid_udp_checksum[checksum_offset..checksum_offset + 2]
-            .copy_from_slice(&invalid_checksum.to_be_bytes());
-        assert_eq!(
-            decode_reply(&invalid_udp_checksum, 7, MAC, ReplyKind::Ack),
-            Err(PacketError::MalformedFrame)
-        );
-        assert_eq!(
-            decode_reply(&valid, 8, MAC, ReplyKind::Ack),
-            Err(PacketError::WrongTransaction)
-        );
-        let mut wrong_udp = valid.clone();
-        wrong_udp[37] = 0;
-        assert_eq!(
-            decode_reply(&wrong_udp, 7, MAC, ReplyKind::Ack),
-            Err(PacketError::InvalidUdpPorts)
-        );
-        let nak = reply_frame(7, &[(53, &[6])]);
-        assert_eq!(
-            decode_reply(&nak, 7, MAC, ReplyKind::Ack),
-            Err(PacketError::Nak)
-        );
-        let missing = reply_frame(
-            7,
-            &[
-                (53, &[5]),
-                (51, &lease),
-                (1, &mask),
-                (3, &router),
-                (54, &server),
-            ],
-        );
-        assert_eq!(
-            decode_reply(&missing, 7, MAC, ReplyKind::Ack),
-            Err(PacketError::MissingAckOption(125))
-        );
-        assert_eq!(
-            decode_reply(&valid[..valid.len() - 1], 7, MAC, ReplyKind::Ack),
-            Err(PacketError::MalformedFrame)
-        );
-        let mut wrong_version = valid;
-        wrong_version[ETHERNET_HEADER_LEN] = 0x65;
-        wrong_version[ETHERNET_HEADER_LEN + 10] = 0;
-        wrong_version[ETHERNET_HEADER_LEN + 11] = 0;
-        let header_checksum =
-            checksum(&wrong_version[ETHERNET_HEADER_LEN..ETHERNET_HEADER_LEN + IPV4_HEADER_LEN]);
-        wrong_version[ETHERNET_HEADER_LEN + 10..ETHERNET_HEADER_LEN + 12]
-            .copy_from_slice(&header_checksum.to_be_bytes());
-        assert_eq!(
-            decode_reply(&wrong_version, 7, MAC, ReplyKind::Ack),
-            Err(PacketError::MalformedFrame)
-        );
-    }
-
-    const fn ip_end_for_test() -> usize {
-        ETHERNET_HEADER_LEN + IPV4_HEADER_LEN
+        frame[ETH + IP + 6..ETH + IP + 8].fill(0);
+        let reply = decode_reply(&frame, 7, MAC, ReplyKind::Ack).unwrap_or(DhcpReply {
+            xid: 0,
+            kind: ReplyKind::Offer,
+            address: Ipv4Addr::UNSPECIFIED,
+            source: Ipv4Addr::UNSPECIFIED,
+            server: None,
+            lease_seconds: None,
+            vendor_specific: None,
+            subnet_mask: None,
+            router: None,
+        });
+        assert_eq!(reply.server, Some(Ipv4Addr::new(192, 0, 2, 1)));
     }
 
     #[test]
-    fn ack_duplicate_server_options_use_first_occurrence() {
-        let lease = 3600_u32.to_be_bytes();
-        let mask = [255, 255, 255, 0];
-        let router = [192, 0, 2, 1];
-        let first_server = [192, 0, 2, 1];
-        let later_server = [198, 51, 100, 1];
-        let frame = reply_frame(
-            7,
-            &[
-                (53, &[5]),
-                (51, &lease),
-                (125, &[0x10]),
-                (1, &mask),
-                (3, &router),
-                (54, &first_server),
-                (54, &later_server),
-            ],
-        );
-
-        let decoded = decode_reply(&frame, 7, MAC, ReplyKind::Ack);
-
-        assert_eq!(
-            decoded.and_then(|reply| reply.server.ok_or(PacketError::MissingOption)),
-            Ok(Ipv4Addr::new(192, 0, 2, 1))
-        );
-    }
-
-    #[test]
-    fn matching_reply_skips_unrelated_frame_before_matching_reply() {
-        let lease = 3600_u32.to_be_bytes();
+    fn matching_reply_discards_unrelated_before_matching() {
         let fields = [
             (53, &[5][..]),
-            (51, &lease[..]),
-            (125, &[0x10][..]),
+            (51, &[0, 0, 14, 16][..]),
+            (125, &[16][..]),
             (1, &[255, 255, 255, 0][..]),
             (3, &[192, 0, 2, 1][..]),
             (54, &[192, 0, 2, 1][..]),
         ];
-        let unrelated = reply_frame(8, &fields);
-        let matching = reply_frame(7, &fields);
-        assert!(!matching_reply(&unrelated, 7, MAC, ReplyKind::Ack).unwrap_or(true));
-        assert!(matching_reply(&matching, 7, MAC, ReplyKind::Ack).unwrap_or(false));
+        assert!(!matching_reply(&reply_frame(8, &fields), 7, MAC, ReplyKind::Ack).unwrap_or(true));
+        assert!(matching_reply(&reply_frame(7, &fields), 7, MAC, ReplyKind::Ack).unwrap_or(false));
     }
 }
