@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Opt-in live gate: starts the release binary against the real provider using
 # credentials from var/iptv-e2e.env, waits for /healthz, then fetches both
-# feeds. Stop any other server on the interface first.
+# feeds. Stop any other server on the interface first. Extra arguments are
+# passed to the server, e.g. `--guide-cache /tmp/guide.json`.
 set -Eeuo pipefail
 
 if [[ "${IPTV_ENABLE_REAL_E2E:-}" != 1 ]]; then
@@ -34,7 +35,7 @@ trap cleanup EXIT
     # shellcheck disable=SC1090
     . "$ENV_FILE"
     set +a
-    exec "$SERVER" --interface "$IPTV_INTERFACE" --host 127.0.0.1 --port "$PORT"
+    exec "$SERVER" --interface "$IPTV_INTERFACE" --host 127.0.0.1 --port "$PORT" "$@"
 ) >"$LOG" 2>&1 &
 SERVER_PID=$!
 
