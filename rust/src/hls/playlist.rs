@@ -13,7 +13,9 @@ pub fn rewrite_playlist(
     base_url: &Url,
     tokens: &TokenStore,
 ) -> Result<PlaylistRewrite, super::tokens::TokenStoreError> {
-    let text = String::from_utf8_lossy(body);
+    let text = String::from_utf8_lossy(body)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
     let mut lines = Vec::new();
     let mut pending = Vec::new();
     for line in text.lines() {
@@ -42,7 +44,7 @@ pub fn rewrite_playlist(
                 rewritten.push_str(&index.to_string());
                 rewritten.push('\0');
                 cursor = end + 1;
-                copied = cursor;
+                copied = end;
             }
             rewritten.push_str(&line[copied..]);
             lines.push(rewritten);
@@ -51,7 +53,7 @@ pub fn rewrite_playlist(
             pending.push(resource_value(base_url, line.trim(), ".ts")?);
             lines.push(format!("\u{0}{index}\u{0}"));
         } else {
-            lines.push(String::new());
+            lines.push(line.to_owned());
         }
         if lines.iter().map(String::len).sum::<usize>() > PLAYLIST_MAX_BYTES {
             return Err(super::tokens::TokenStoreError::Capacity);
