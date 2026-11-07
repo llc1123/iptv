@@ -1,0 +1,164 @@
+{
+  "about": "Deterministic golden fixtures generated from the Python POC oracle. All inputs are synthetic constants declared below; expected values are produced by executing iptv_client code, never by hand.",
+  "files": [
+    {
+      "case_count": 6,
+      "covers": [
+        "aligned-padding",
+        "non-aligned-padding"
+      ],
+      "family": "padding",
+      "path": "padding.json",
+      "sha256": "51f26d150d761de95c151f2694fdc9c220ddfe65484e2e4f92336e05a9227264"
+    },
+    {
+      "case_count": 11,
+      "covers": [
+        "aligned-padding",
+        "malformed-lengths",
+        "non-aligned-padding",
+        "option60"
+      ],
+      "family": "option60",
+      "path": "option60.json",
+      "sha256": "e83f6ef4dabf3e1847a5590765ae03e9c2b5e0737e7dddadc714c5435a68cd4f"
+    },
+    {
+      "case_count": 7,
+      "covers": [
+        "epg-auth"
+      ],
+      "family": "epg-auth",
+      "path": "epg_auth.json",
+      "sha256": "312bdc716f82175e60bb34facdda97c4cd302a3db067d0c30b56296701f67322"
+    },
+    {
+      "case_count": 7,
+      "covers": [
+        "duplicate-attributes",
+        "html-entities",
+        "parsers"
+      ],
+      "family": "parsers",
+      "path": "parsers.json",
+      "sha256": "e8d4b28dd6f6995105ef03ab4bacd69acb7a73be1560e88d08ce87d67400d6d8"
+    },
+    {
+      "case_count": 10,
+      "covers": [
+        "models"
+      ],
+      "family": "models",
+      "path": "models.json",
+      "sha256": "82295da890b435783943a6d51a494b898db453c2e66944d364161905639f3cce"
+    },
+    {
+      "case_count": 20,
+      "covers": [
+        "failure-status-shapes"
+      ],
+      "family": "status",
+      "path": "status_shapes.json",
+      "sha256": "ea9111a6debdb03b1d9795d5c77f4597e489d58495708917246bf312547e05cf"
+    },
+    {
+      "case_count": 8,
+      "covers": [
+        "m3u",
+        "xml-escaping",
+        "xmltv"
+      ],
+      "family": "render",
+      "path": "m3u_xmltv.json",
+      "sha256": "58682183f4b72b3dc53d9b31455bc8d6d67282ad24eea9e3075e9ce7663843a2"
+    },
+    {
+      "case_count": 7,
+      "covers": [
+        "guide-cache"
+      ],
+      "family": "guide-cache",
+      "path": "guide_cache.json",
+      "sha256": "7fa352c12ddf1fe6e4cf4d396045c86cdf96f6ac0763bedb96c096efb0f610db"
+    },
+    {
+      "case_count": 9,
+      "covers": [
+        "protocol-relative-urls",
+        "query-urls",
+        "relative-urls",
+        "url-join"
+      ],
+      "family": "urljoin",
+      "path": "urljoin.json",
+      "sha256": "250bb67b7b0260e152db5bc4151625caa5f789af22067c82c833d53f9e2e509c"
+    },
+    {
+      "case_count": 13,
+      "covers": [
+        "catch-up",
+        "iso-catchup",
+        "numeric-catchup"
+      ],
+      "family": "catchup",
+      "path": "catchup.json",
+      "sha256": "f2ba76097220bd90f6541fce866469c580229681767a26c5681569b827dc2df9"
+    },
+    {
+      "case_count": 14,
+      "covers": [
+        "bom-playlists",
+        "cr-playlists",
+        "crlf-playlists",
+        "hls-rewrite",
+        "protocol-relative-urls",
+        "query-urls",
+        "relative-urls"
+      ],
+      "family": "hls-rewrite",
+      "path": "hls_rewrite.json",
+      "sha256": "278cb6efaef4078377a72b94bf207caa982e40a1f1a33e7a784ccbdff5728ce9"
+    }
+  ],
+  "forbidden_markers_sha256": "81a10194230bfc047627bb351081ed8577057a0bf309c9420fb844f4a362d0c0",
+  "inputs": {
+    "base_url": "http://192.0.2.1:8080",
+    "custom_str": "$CTC",
+    "dhcp_password": "fixture-dhcp-password",
+    "dhcp_user": "fixture-user",
+    "encrypt_token": "FIXTURE-ENCRYPT-TOKEN",
+    "epg_password": "fixture-epg-password",
+    "epg_user": "fixture-user",
+    "ip_address": "192.0.2.10",
+    "mac": "02:00:00:00:00:01",
+    "r_hex": "7856341200000000",
+    "random_value": 12345678,
+    "stb_id": "0102030405060708",
+    "token_prefix": "fixturetok",
+    "ts_hex": "cb047b4514000000",
+    "upstream_base": "http://upstream.example.com:8080/live/chan.m3u8"
+  },
+  "required_coverage": [
+    "aligned-padding",
+    "non-aligned-padding",
+    "malformed-lengths",
+    "duplicate-attributes",
+    "html-entities",
+    "crlf-playlists",
+    "cr-playlists",
+    "bom-playlists",
+    "relative-urls",
+    "protocol-relative-urls",
+    "query-urls",
+    "xml-escaping",
+    "numeric-catchup",
+    "iso-catchup",
+    "failure-status-shapes"
+  ],
+  "schema": "iptv-poc-golden",
+  "timezone": {
+    "local_posix": "<+08>-8",
+    "render_offset_minutes": 480
+  },
+  "version": 1
+}
