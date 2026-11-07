@@ -193,3 +193,14 @@ fn range_reads_are_bounded_and_invalid_ranges_do_not_leak_bytes() {
         Err(LogoCatalogError::InvalidRange)
     );
 }
+
+#[test]
+fn has_logo_requires_a_served_file() {
+    let fixture = Fixture::new();
+    let catalog =
+        LogoCatalog::load(fixture.catalog(&valid_catalog("logos/one.png"))).expect("valid catalog");
+    assert!(!catalog.has_logo("c1"));
+    fs::write(fixture.0.join("logos/one.png"), b"png").expect("logo");
+    assert!(catalog.has_logo("c1"));
+    assert!(!catalog.has_logo("c2"));
+}

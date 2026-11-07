@@ -1,7 +1,8 @@
 use crate::{
     epg::{BootChannel, Programme},
     guide::{GuideZone, ProgrammeIndex},
-    render::{BaseUrl, RenderKind, render_m3u, render_xmltv},
+    logo_catalog::LogoCatalog,
+    render::{BaseUrl, RenderKind, logo_url, render_m3u, render_xmltv},
 };
 use std::{
     collections::HashMap,
@@ -57,6 +58,7 @@ impl Snapshot {
         &self,
         kind: RenderKind,
         base: &BaseUrl,
+        logos: Option<&LogoCatalog>,
     ) -> Result<Arc<[u8]>, crate::render::RenderError> {
         // Feeds join paths onto the base without its trailing slashes, so
         // those variants render identical bytes and share an entry.
@@ -66,11 +68,24 @@ impl Snapshot {
                 return Ok(Arc::clone(bytes));
             }
         }
+        // Like Python, feeds advertise only logos served by `/logos`.
+        let channels = self
+            .channels
+            .iter()
+            .map(|channel| {
+                let mut channel = channel.clone();
+                channel.logo_url = match logos {
+                    Some(logos) if logos.has_logo(&channel.channel_id) => {
+                        logo_url(base, &channel.channel_id)
+                    }
+                    _ => String::new(),
+                };
+                channel
+            })
+            .collect::<Vec<_>>();
         let bytes = match kind {
-            RenderKind::M3u => render_m3u(&self.channels, base, self.catchup_days)?,
-            RenderKind::Xmltv => {
-                render_xmltv(&self.channels, &self.programmes, &self.guide_zone, base)?
-            }
+            RenderKind::M3u => render_m3u(&channels, base, self.catchup_days)?,
+            RenderKind::Xmltv => render_xmltv(&channels, &self.programmes, &self.guide_zone, base)?,
         };
         let bytes: Arc<[u8]> = Arc::from(bytes);
         if let Ok(mut cache) = self.rendered.lock() {

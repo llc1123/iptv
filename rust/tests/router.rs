@@ -55,6 +55,7 @@ async fn health_and_feeds_match_snapshot_rendering() {
             .render(
                 kind,
                 &BaseUrl::parse(&format!("http://{}", fixture.host)).unwrap(),
+                None,
             )
             .unwrap();
         assert_eq!(

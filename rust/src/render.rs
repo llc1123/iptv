@@ -58,6 +58,15 @@ pub enum RenderError {
     OwnershipLost,
 }
 
+/// The proxied logo route for a channel, as Python's `LogoCatalog.logo_url`.
+pub fn logo_url(base: &BaseUrl, channel_id: &str) -> String {
+    format!(
+        "{}/logos/{}",
+        base.joined(),
+        render_writer::encode_component(channel_id)
+    )
+}
+
 /// Renders the exact Python-compatible M3U bytes.
 ///
 /// # Errors
@@ -118,13 +127,10 @@ fn write_m3u(
             writer.text(base.joined(), false)?;
             writer.text("/catchup/", false)?;
             write_component(writer, &channel.channel_id)?;
-            writer.text(".m3u8?utc={utc}&lutc={lutc}\"", false)?;
+            writer.text(".m3u8?utc={utc}&lutc={lutc}", false)?;
         }
         if !channel.logo_url.is_empty() {
-            if !catchup_enabled {
-                writer.text("\"", false)?;
-            }
-            writer.text(" tvg-logo=\"", false)?;
+            writer.text("\" tvg-logo=\"", false)?;
             writer.text(&channel.logo_url, false)?;
         }
         writer.text("\",", false)?;

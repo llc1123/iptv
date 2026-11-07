@@ -81,19 +81,26 @@ pub(super) fn validate_xml_value(value: &str) -> Result<(), RenderError> {
 }
 
 pub(super) fn write_component(writer: &mut Writer, value: &str) -> Result<(), RenderError> {
+    writer.text(&encode_component(value), false)
+}
+
+/// Percent-encodes everything but RFC 3986 unreserved bytes, like Python's
+/// `quote(value, safe="")`.
+pub(super) fn encode_component(value: &str) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut output = String::with_capacity(value.len());
     for &byte in value.as_bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            writer.bytes(&[byte])?;
+            output.push(char::from(byte));
         } else {
-            writer.bytes(&[
-                b'%',
-                HEX[usize::from(byte >> 4)],
-                HEX[usize::from(byte & 15)],
-            ])?;
+            output.extend([
+                '%',
+                char::from(HEX[usize::from(byte >> 4)]),
+                char::from(HEX[usize::from(byte & 15)]),
+            ]);
         }
     }
-    Ok(())
+    output
 }
 
 /// Characters XML 1.0 forbids even as character references; the feed drops

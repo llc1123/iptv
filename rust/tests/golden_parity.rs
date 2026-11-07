@@ -229,7 +229,7 @@ fn assert_render_cache_steps(steps: &Value) {
             .unwrap()
             .replace("1:8080/other", "2:8080");
         let base = BaseUrl::parse(&base_text).unwrap();
-        let rendered = snapshot.render(RenderKind::M3u, &base).unwrap();
+        let rendered = snapshot.render(RenderKind::M3u, &base, None).unwrap();
         match step["expect"].as_str().unwrap() {
             "render" => assert!(
                 cached

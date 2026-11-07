@@ -128,6 +128,12 @@ async fn start(
         (channels, programmes, true)
     } else {
         let (channels, programmes) = refresh::refresh_once(&epg, &config, &zone, None).await?;
+        let saved = programmes.clone();
+        match tokio::task::spawn_blocking(move || guide_cache.save(&saved)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "guide cache write failed"),
+            Err(error) => tracing::warn!(%error, "guide cache write failed"),
+        }
         (channels, programmes, false)
     };
     let snapshots = Arc::new(RwLock::new(Snapshot::new(

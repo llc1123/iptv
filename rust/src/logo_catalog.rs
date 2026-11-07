@@ -156,6 +156,14 @@ impl LogoCatalog {
             .filter(|entry| !entry.logo_path.is_empty())
             .count()
     }
+    /// Whether the channel has a catalog logo file that `read` can serve.
+    pub fn has_logo(&self, channel_id: &str) -> bool {
+        self.entries
+            .get(channel_id)
+            .filter(|entry| !entry.logo_path.is_empty())
+            .and_then(|entry| self.safe_entry_path(&entry.logo_path).ok())
+            .is_some_and(|path| path.is_file())
+    }
     /// Loads a catalog using fixed default bounds.
     ///
     /// # Errors

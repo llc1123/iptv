@@ -42,10 +42,12 @@ async fn feed(
         tracing::warn!("feed request base URL was invalid");
         RequestError::new("epg-guide", "request base URL was invalid")
     })?;
-    let bytes = snapshot.render(kind, &base).map_err(|error| {
-        tracing::warn!(%error, "feed render failed");
-        RequestError::new("epg-guide", error.to_string())
-    })?;
+    let bytes = snapshot
+        .render(kind, &base, state.logos.as_deref())
+        .map_err(|error| {
+            tracing::warn!(%error, "feed render failed");
+            RequestError::new("epg-guide", error.to_string())
+        })?;
     let mut response = Response::new(Body::from(bytes.to_vec()));
     response
         .headers_mut()
