@@ -12,7 +12,7 @@ use reqwest::Url;
 
 use crate::health::HealthState;
 use crate::hls::{RequestHeaders, TokenStore};
-use crate::lifecycle::{CancellationSource, CancellationToken, Lifecycle, RequestGuard};
+use crate::lifecycle::{CancellationToken, Lifecycle, RequestGuard};
 use crate::logo_catalog::LogoCatalog;
 use crate::snapshot::SnapshotStore;
 use crate::{epg::EpgClient, epg::Programme};
@@ -21,8 +21,8 @@ pub mod handlers;
 pub mod proxy;
 pub mod router;
 
-pub use proxy::{PolicyForwarder, SystemResolver};
-pub use router::{ServeState, build_router, serve_with_gate};
+pub use proxy::PolicyForwarder;
+pub use router::{ServeState, build_router, serve};
 
 /// A playback resolution failure without provider details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,16 +67,6 @@ pub struct EpgPlaybackResolver {
 }
 
 impl EpgPlaybackResolver {
-    /// Creates a resolver for authenticated TVOD playback.
-    #[must_use]
-    pub fn new(client: EpgClient) -> Self {
-        Self::with_runtime(
-            client,
-            SnapshotStore::new(),
-            CancellationSource::new().token(),
-        )
-    }
-
     /// Creates a resolver bound to the live snapshot and process cancellation.
     #[must_use]
     pub fn with_runtime(
