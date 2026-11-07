@@ -95,6 +95,12 @@ reference: deterministic fixtures generated from it by
 output byte for byte. The only intended difference is that HLS resource URLs
 lose their `#fragment` before they are proxied.
 
+Unlike the Python server, the Rust server also renews its DHCP lease: it
+repeats the authenticated DHCP exchange at half the lease time and retries
+until expiry. If the lease expires or the server hands out a different
+address, the process exits with status 1 so a supervisor such as the systemd
+unit below restarts it on the new lease.
+
 Prepare the host once, then run the offline gate:
 
 ```bash

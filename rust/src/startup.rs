@@ -7,6 +7,7 @@ use crate::{
     http::{AppState, MetadataPaths, router},
     logo_catalog::LogoCatalog,
     refresh,
+    renewal::{Renewal, RenewalError},
     snapshot::Snapshot,
 };
 use axum::Router;
@@ -27,6 +28,7 @@ struct Service {
     listener: TcpListener,
     router: Router,
     refresh: JoinHandle<()>,
+    renewal: JoinHandle<Result<(), RenewalError>>,
 }
 
 pub async fn run(config: Config) -> Result<(), StartupError> {
@@ -47,22 +49,37 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
         .with_graceful_shutdown(async move { wait_shutdown(&mut drain).await })
         .into_future();
     let mut server = std::pin::pin!(server);
-    tokio::select! {
-        result = &mut server => result?,
-        () = wait_shutdown(&mut shutdown) => {
-            // Proxied HLS responses can stay open indefinitely; stop waiting
-            // for them after a bounded drain.
-            if let Ok(result) = timeout(DRAIN_TIMEOUT, &mut server).await {
-                result?;
-            } else {
-                tracing::warn!("open connections did not drain; shutting down");
+    let mut renewal = service.renewal;
+    let mut failure: Option<StartupError> = None;
+    let drain = tokio::select! {
+        result = &mut server => {
+            result?;
+            false
+        }
+        () = wait_shutdown(&mut shutdown) => true,
+        result = &mut renewal => {
+            if let Ok(Err(error)) = result {
+                tracing::error!(%error, "stopping: DHCP lease is no longer usable");
+                failure = Some(error.into());
             }
+            let _ = shutdown_tx.send(true);
+            true
+        }
+    };
+    if drain {
+        // Proxied HLS responses can stay open indefinitely; stop waiting for
+        // them after a bounded drain.
+        if let Ok(result) = timeout(DRAIN_TIMEOUT, &mut server).await {
+            result?;
+        } else {
+            tracing::warn!("open connections did not drain; shutting down");
         }
     }
     let _ = shutdown_tx.send(true);
     let _ = timeout(Duration::from_secs(5), service.refresh).await;
+    renewal.abort();
     signal_task.abort();
-    Ok(())
+    failure.map_or(Ok(()), Err)
 }
 
 async fn start(
@@ -75,6 +92,12 @@ async fn start(
     let dhcp_password = config.dhcp_password.as_str().to_owned();
     let prefix = config.stb_id_prefix.clone();
     let routes = config.routes.clone();
+    let renewal = Renewal {
+        interface: interface.clone(),
+        user: dhcp_user.clone(),
+        password: dhcp_password.clone(),
+        stb_id_prefix: prefix.clone(),
+    };
     let (lease, interface_mac) = tokio::task::spawn_blocking(move || {
         let client_config = ClientConfig {
             user: &dhcp_user,
@@ -86,6 +109,7 @@ async fn start(
         Ok::<_, crate::dhcp::DhcpError>((lease, mac))
     })
     .await??;
+    let renewal = tokio::spawn(renewal.run(lease.clone(), shutdown_rx.clone()));
     let epg = EpgClient::new(EpgConfig {
         authentication_url: config.authentication_url.clone(),
         user_id: config.epg_user.as_str().to_owned(),
@@ -146,6 +170,7 @@ async fn start(
         listener,
         router: router(state),
         refresh,
+        renewal,
     })
 }
 

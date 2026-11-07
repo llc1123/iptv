@@ -90,6 +90,15 @@ pub fn configure_interface(
     }
     Ok(())
 }
+/// Removes a lease's address from the interface, e.g. after the server handed
+/// out a different one on renewal.
+pub fn remove_address(interface: &str, lease: &super::DhcpLease) -> Result<(), DhcpError> {
+    LinuxPlatform::new(interface)?;
+    let address = format!("{}/{}", lease.address, lease.prefix_length());
+    let argv = ["ip", "addr", "del", &address, "dev", interface].map(str::to_owned);
+    run_ip_command(&argv, STAGE_TIMEOUT)?;
+    Ok(())
+}
 fn route_commands(
     interface: &str,
     lease: &super::DhcpLease,

@@ -12,6 +12,7 @@ pub mod http;
 pub mod logo_catalog;
 pub mod refresh;
 pub mod render;
+pub mod renewal;
 pub mod snapshot;
 /// Production startup composition and process-owned shutdown orchestration.
 pub mod startup;
