@@ -11,7 +11,7 @@ use crate::{
 };
 use axum::Router;
 use chrono_tz::Tz;
-use std::{net::IpAddr, sync::Arc};
+use std::{future::IntoFuture, net::IpAddr, sync::Arc};
 use tokio::{
     net::TcpListener,
     sync::{RwLock, mpsc, watch},
@@ -20,6 +20,8 @@ use tokio::{
 };
 
 type StartupError = Box<dyn std::error::Error + Send + Sync>;
+
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct Service {
     listener: TcpListener,
@@ -31,21 +33,32 @@ pub async fn run(config: Config) -> Result<(), StartupError> {
     let zone = config.guide_timezone.parse::<Tz>().map(GuideZone::Iana)?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let signal_task = tokio::spawn(signal(shutdown_tx.clone()));
-    let mut startup_shutdown = shutdown_rx.clone();
+    let mut shutdown = shutdown_rx.clone();
     let service = tokio::select! {
         result = start(config, zone, shutdown_rx) => result?,
-        () = wait_shutdown(&mut startup_shutdown) => {
+        () = wait_shutdown(&mut shutdown) => {
             tracing::info!("shutdown requested during startup");
             signal_task.abort();
             return Ok(());
         }
     };
-    axum::serve(service.listener, service.router)
-        .with_graceful_shutdown(async move {
-            let mut shutdown = startup_shutdown;
-            wait_shutdown(&mut shutdown).await;
-        })
-        .await?;
+    let mut drain = shutdown.clone();
+    let server = axum::serve(service.listener, service.router)
+        .with_graceful_shutdown(async move { wait_shutdown(&mut drain).await })
+        .into_future();
+    let mut server = std::pin::pin!(server);
+    tokio::select! {
+        result = &mut server => result?,
+        () = wait_shutdown(&mut shutdown) => {
+            // Proxied HLS responses can stay open indefinitely; stop waiting
+            // for them after a bounded drain.
+            if let Ok(result) = timeout(DRAIN_TIMEOUT, &mut server).await {
+                result?;
+            } else {
+                tracing::warn!("open connections did not drain; shutting down");
+            }
+        }
+    }
     let _ = shutdown_tx.send(true);
     let _ = timeout(Duration::from_secs(5), service.refresh).await;
     signal_task.abort();
@@ -141,31 +154,35 @@ fn epg_mac(configured: Option<&str>, interface: crate::dhcp::MacAddress) -> Stri
 }
 
 async fn wait_shutdown(shutdown: &mut watch::Receiver<bool>) {
-    let _ = shutdown.changed().await;
+    let _ = shutdown.wait_for(|stop| *stop).await;
 }
 
+/// Requests shutdown on Ctrl-C or SIGTERM. A handler that cannot be installed
+/// is logged and never fires, so it cannot stop a healthy server.
 async fn signal(sender: watch::Sender<bool>) {
-    #[cfg(unix)]
-    let mut terminate =
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).ok();
-    #[cfg(unix)]
-    tokio::select! {
-        result = tokio::signal::ctrl_c() => {
-            if let Err(error) = result {
-                tracing::error!(%error, "ctrl-c signal failed");
-            }
+    let ctrl_c = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::error!(%error, "ctrl-c handler unavailable");
+            std::future::pending::<()>().await;
         }
-        () = async {
-            if let Some(signal) = &mut terminate {
-                signal.recv().await;
-            } else {
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                terminate.recv().await;
+            }
+            Err(error) => {
+                tracing::error!(%error, "SIGTERM handler unavailable");
                 std::future::pending::<()>().await;
             }
-        } => {}
-    }
+        }
+    };
     #[cfg(not(unix))]
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        tracing::error!(%error, "ctrl-c signal failed");
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
     }
     if let Err(error) = sender.send(true) {
         tracing::debug!(%error, "shutdown already complete");
