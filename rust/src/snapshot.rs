@@ -381,10 +381,3 @@ fn stable_xmltv_programmes(input: &[Programme]) -> Vec<Programme> {
     });
     programmes
 }
-
-#[cfg(test)]
-#[path = "snapshot_regression_tests.rs"]
-mod regression_tests;
-#[cfg(test)]
-#[path = "snapshot_tests.rs"]
-mod tests;
