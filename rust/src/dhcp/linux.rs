@@ -69,7 +69,7 @@ pub fn acquire_lease(
         mac,
         xid,
         offer.address,
-        offer.source,
+        offer.server.unwrap_or(offer.source),
         &request_option60,
         hostname.as_bytes(),
     )?;

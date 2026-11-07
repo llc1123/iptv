@@ -111,16 +111,15 @@ mod tests {
     #[test]
     fn lease_interpretation_validates_prefix_router_duration_and_expiry() {
         let now = Instant::now();
-        let Ok(lease) = from_ack(
+        let lease = from_ack(
             reply(
                 Ipv4Addr::new(255, 255, 255, 0),
                 Ipv4Addr::new(192, 0, 2, 1),
                 60,
             ),
             now,
-        ) else {
-            return;
-        };
+        )
+        .expect("valid ACK yields a lease");
         assert_eq!(lease.prefix_length(), 24);
         assert!(!lease.is_expired(now));
         assert!(lease.is_expired(now + Duration::from_secs(60)));
