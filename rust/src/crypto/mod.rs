@@ -63,10 +63,10 @@ fn pad(input: &[u8], byte: u8) -> Vec<u8> {
     output
 }
 
-pub(super) fn zero_pad(input: &[u8]) -> Vec<u8> {
+pub(crate) fn zero_pad(input: &[u8]) -> Vec<u8> {
     pad(input, 0)
 }
-pub(super) fn pkcs7_pad(input: &[u8]) -> Vec<u8> {
+pub(crate) fn pkcs7_pad(input: &[u8]) -> Vec<u8> {
     let padding = u8::try_from(BLOCK - input.len() % BLOCK).unwrap_or(0);
     pad(input, padding)
 }
@@ -89,4 +89,38 @@ pub(super) fn md5_parts(parts: &[&[u8]]) -> [u8; 16] {
         digest.update(part);
     }
     digest.finalize().into()
+}
+
+#[cfg(test)]
+mod golden_padding_tests {
+    use super::{pkcs7_pad, zero_pad};
+    use serde_json::Value;
+
+    #[test]
+    fn padding_fixture_cases_match_python_bytes() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/padding.json"))
+                .expect("padding fixture");
+        let cases = fixture["cases"].as_array().expect("padding cases");
+        assert_eq!(cases.len(), 6);
+        let mut assertions = 0;
+        for case in cases {
+            let input = &case["input"];
+            let plaintext = hex::decode(input["plaintext_hex"].as_str().expect("plaintext"))
+                .expect("plaintext hex");
+            let padded = match input["kind"].as_str().expect("padding kind") {
+                "pkcs7" => pkcs7_pad(&plaintext),
+                "option60-zero" => zero_pad(&plaintext),
+                kind => panic!("unknown padding kind: {kind}"),
+            };
+            assert_eq!(
+                hex::encode(padded),
+                case["expected"]["padded_hex"].as_str().expect("padded hex"),
+                "fixture {}",
+                case["id"]
+            );
+            assertions += 1;
+        }
+        assert_eq!(assertions, cases.len());
+    }
 }
