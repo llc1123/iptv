@@ -62,7 +62,8 @@ rules=0
 if [ "$route_table" = "254" ]; then
 	# The main table: count what this interface contributes to it.
 	routes=$(ip -4 route show 2>/dev/null | grep -c "dev $interface ")
-	rules=$(ip rule show 2>/dev/null | grep -c "lookup 254 ")
+	# BusyBox prints the main table by name, and it can end the line.
+	rules=$(ip rule show 2>/dev/null | grep -cE 'lookup (254|main)( |$)')
 else
 	routes=$(ip route show table all 2>/dev/null | grep -c " table $route_table ")
 	rules=$(ip rule show 2>/dev/null | grep -c "lookup $route_table ")

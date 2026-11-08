@@ -187,13 +187,13 @@ async fn hold(
         let renewed = match &held {
             Some(lease) => match renew(config, lease).await {
                 Ok(renewed) => Ok(renewed),
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        "DHCP renewal request was refused; acquiring a new lease"
-                    );
+                // A timeout or I/O error is transient: a fresh DISCOVER would
+                // likely return another address and force a full restart.
+                Err(DhcpError::Platform(crate::dhcp::LinuxError::Nak)) => {
+                    tracing::warn!("DHCP renewal was refused; acquiring a new lease");
                     acquire(config).await
                 }
+                Err(error) => Err(error),
             },
             None => acquire(config).await,
         };

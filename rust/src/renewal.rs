@@ -102,9 +102,8 @@ impl Renewal {
         })
     }
 
-    /// Asks the server to extend `held`; a rejected or unanswered renewal falls
-    /// back to a full acquisition, which is the only thing that works once the
-    /// binding is gone.
+    /// Asks the server to extend `held`. Only a NAK falls back to a full
+    /// acquisition, which is the only recovery once the binding is gone.
     async fn renew(&self, held: &DhcpLease) -> Result<DhcpLease, DhcpError> {
         let interface = self.interface.clone();
         let user = self.user.clone();
@@ -126,11 +125,14 @@ impl Renewal {
             )))
         });
         match renewed {
-            Ok(lease) => Ok(lease),
-            Err(error) => {
-                tracing::warn!(%error, "DHCP renewal request was refused; acquiring a new lease");
+            // Only a NAK means the binding is gone. A timeout or I/O error is
+            // transient, and a fresh DISCOVER would likely come back with a
+            // different address, which ends the server for no reason.
+            Err(DhcpError::Platform(crate::dhcp::LinuxError::Nak)) => {
+                tracing::warn!("DHCP renewal was refused; acquiring a new lease");
                 self.acquire().await
             }
+            other => other,
         }
     }
 }

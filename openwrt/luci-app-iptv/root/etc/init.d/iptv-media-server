@@ -50,9 +50,20 @@ start_service() {
 	config_get logo_dir main logo_dir '/etc/iptv/logos'
 	config_get refresh_interval_seconds main refresh_interval_seconds '3600'
 
+	local network_args
+	if [ "$managed" != "1" ] && { [ -z "$dhcp_user" ] || [ -z "$dhcp_password" ]; }; then
+		logger -t iptv-media-server "DHCP credentials are not set"
+		return 1
+	fi
+	# Checked here rather than left to the server: it would exit at startup and
+	# procd would respawn it forever.
+	if [ -z "$epg_user" ] || [ -z "$epg_password" ]; then
+		logger -t iptv-media-server "EPG credentials are not set"
+		return 1
+	fi
+
 	mkdir -p "$(dirname "$guide_cache")"
 
-	local network_args
 	if [ "$managed" = "1" ]; then
 		# netifd owns the interface through `proto iptv`; serve against the
 		# address it configured instead of acquiring our own lease.
