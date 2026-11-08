@@ -1,6 +1,10 @@
 # Node tooling.
 /node_modules/
 
+# Python bytecode, in case a fixture tool ever comes back.
+__pycache__/
+*.py[cod]
+
 # Runtime output and generated release artifacts.
 /var/
 /dist/
