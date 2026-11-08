@@ -10,7 +10,7 @@
 
 use crate::{
     config::Config,
-    dhcp::{ClientConfig, DhcpError, DhcpLease, acquire_lease},
+    dhcp::{ClientConfig, DhcpError, DhcpLease, acquire_lease, renew_lease},
     renewal::{MIN_RETRY, retry_delay},
 };
 use std::{
@@ -84,7 +84,7 @@ impl LeaseReport {
 
 /// Runs `script` with the report in its environment. A script that fails is
 /// logged and does not stop the daemon: the lease itself is still held.
-fn report(script: Option<&PathBuf>, lease: &LeaseReport, event: LeaseEvent) {
+fn report_lease(script: Option<&PathBuf>, lease: &LeaseReport, event: LeaseEvent) {
     if event == LeaseEvent::Expired {
         tracing::warn!(interface = %lease.interface, "DHCP lease expired; address is no longer ours");
     } else {
@@ -118,7 +118,7 @@ fn report(script: Option<&PathBuf>, lease: &LeaseReport, event: LeaseEvent) {
 
 /// Acquires one lease for `config.interface`, off the async runtime because
 /// the exchange sleeps on raw-socket reads.
-async fn acquire(config: &Config) -> Result<LeaseReport, DhcpError> {
+async fn acquire(config: &Config) -> Result<DhcpLease, DhcpError> {
     let config = config.clone();
     tokio::task::spawn_blocking(move || {
         let client = ClientConfig {
@@ -126,8 +126,7 @@ async fn acquire(config: &Config) -> Result<LeaseReport, DhcpError> {
             password: config.dhcp_password.as_str(),
             stb_id_prefix: &config.stb_id_prefix,
         };
-        acquire_lease(&config.interface, &client)
-            .map(|(lease, _)| LeaseReport::from_lease(&config.interface, &lease))
+        acquire_lease(&config.interface, &client).map(|(lease, _)| lease)
     })
     .await
     .map_err(|error| DhcpError::Platform(crate::dhcp::LinuxError::Io(error.to_string())))?
@@ -150,12 +149,32 @@ pub async fn daemon(config: Config, script: Option<PathBuf>) -> Result<(), DhcpE
     result
 }
 
+/// Renews the binding `held` describes, off the async runtime like `acquire`.
+///
+/// # Errors
+/// Returns the exchange error; the caller falls back to a full acquisition.
+async fn renew(config: &Config, held: &DhcpLease) -> Result<DhcpLease, DhcpError> {
+    let config = config.clone();
+    let held = held.clone();
+    tokio::task::spawn_blocking(move || {
+        let client = ClientConfig {
+            user: config.dhcp_user.as_str(),
+            password: config.dhcp_password.as_str(),
+            stb_id_prefix: &config.stb_id_prefix,
+        };
+        renew_lease(&config.interface, &client, &held)
+    })
+    .await
+    .map_err(|error| DhcpError::Platform(crate::dhcp::LinuxError::Io(error.to_string())))?
+}
+
+/// Holds one lease for the interface, renewing it until shutdown.
 async fn hold(
     config: &Config,
     script: Option<&PathBuf>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), DhcpError> {
-    let mut held: Option<LeaseReport> = None;
+    let mut held: Option<DhcpLease> = None;
     let mut expires_at = Instant::now();
     let mut attempt_at = Instant::now();
 
@@ -163,16 +182,36 @@ async fn hold(
         if !sleep_until(attempt_at, &mut shutdown).await {
             return Ok(());
         }
-        match acquire(config).await {
+        // Renew what we hold. A fresh DISCOVER can be answered with any free
+        // address, so it is the fallback, not the renewal.
+        let renewed = match &held {
+            Some(lease) => match renew(config, lease).await {
+                Ok(renewed) => Ok(renewed),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "DHCP renewal request was refused; acquiring a new lease"
+                    );
+                    acquire(config).await
+                }
+            },
+            None => acquire(config).await,
+        };
+        match renewed {
             Ok(renewed) => {
+                let lease = LeaseReport::from_lease(&config.interface, &renewed);
                 let same_address = held
                     .as_ref()
-                    .is_none_or(|lease| lease.address == renewed.address);
-                let event = match &held {
-                    Some(_) if same_address => LeaseEvent::Renewed,
-                    _ => LeaseEvent::Bound,
-                };
-                report(script, &renewed, event);
+                    .is_none_or(|previous| previous.address == renewed.address);
+                report_lease(
+                    script,
+                    &lease,
+                    if held.is_some() && same_address {
+                        LeaseEvent::Renewed
+                    } else {
+                        LeaseEvent::Bound
+                    },
+                );
                 if !same_address {
                     // The media server is bound to the old address; netifd has
                     // to reconfigure and restart everything.
@@ -182,7 +221,7 @@ async fn hold(
                 }
                 let now = Instant::now();
                 expires_at = now + Duration::from_secs(u64::from(renewed.lease_seconds));
-                attempt_at = now + Duration::from_secs(u64::from(renewed.renew_seconds));
+                attempt_at = now + Duration::from_secs(u64::from(renewed.lease_seconds / 2));
                 held = Some(renewed);
             }
             Err(error) => match &held {
@@ -193,7 +232,11 @@ async fn hold(
                 Some(lease) => {
                     let now = Instant::now();
                     if now >= expires_at {
-                        report(script, lease, LeaseEvent::Expired);
+                        report_lease(
+                            script,
+                            &LeaseReport::from_lease(&config.interface, lease),
+                            LeaseEvent::Expired,
+                        );
                         return Err(error);
                     }
                     tracing::warn!(%error, "DHCP renewal failed; retrying");

@@ -65,18 +65,7 @@ pub fn acquire_lease(
         .mac
         .map(|mac| MacAddress::new(mac.octets()))
         .ok_or_else(|| LinuxError::Io(format!("{} has no MAC address", interface.name)))?;
-    let config_datalink = pnet_datalink::Config {
-        read_timeout: Some(RECEIVE_POLL),
-        promiscuous: false,
-        ..pnet_datalink::Config::default()
-    };
-    let (mut tx, mut rx) = match pnet_datalink::channel(&interface, config_datalink) {
-        Ok(Channel::Ethernet(tx, rx)) => (tx, rx),
-        Ok(_) => return Err(LinuxError::Io("unsupported datalink channel".to_owned()).into()),
-        Err(error) => {
-            return Err(LinuxError::Io(format!("open {}: {error}", interface.name)).into());
-        }
-    };
+    let (mut tx, mut rx) = channel(&interface)?;
     let hostname = format!("{}{}", config.stb_id_prefix, mac.compact_upper());
     let xid = random_u32()?;
     let discover = packet::build_discover(mac, xid, &option60(config)?, hostname.as_bytes())?;
@@ -92,6 +81,56 @@ pub fn acquire_lease(
     let acquired_at = Instant::now();
     let ack = exchange(&mut *tx, &mut *rx, &request, xid, mac, ReplyKind::Ack)?;
     Ok((lease::from_ack(ack, acquired_at)?, mac))
+}
+
+/// Renews `held` in place: one REQUEST carrying the address already held, with
+/// no requesting-server options, so the server keeps the same binding instead
+/// of handing out whatever DISCOVER would have offered.
+///
+/// # Errors
+/// Returns the exchange error; the caller falls back to a full acquisition,
+/// which is also what recovers from an expired lease.
+pub fn renew_lease(
+    interface: &str,
+    config: &ClientConfig<'_>,
+    held: &DhcpLease,
+) -> Result<DhcpLease, DhcpError> {
+    check_capabilities()?;
+    let interface = find_interface(interface)?;
+    let mac = interface
+        .mac
+        .map(|mac| MacAddress::new(mac.octets()))
+        .ok_or_else(|| LinuxError::Io(format!("{} has no MAC address", interface.name)))?;
+    let (mut tx, mut rx) = channel(&interface)?;
+    let hostname = format!("{}{}", config.stb_id_prefix, mac.compact_upper());
+    let xid = random_u32()?;
+    let request = packet::build_renew(
+        mac,
+        xid,
+        held.address,
+        &option60(config)?,
+        hostname.as_bytes(),
+    )?;
+    let renewed_at = Instant::now();
+    let ack = exchange(&mut *tx, &mut *rx, &request, xid, mac, ReplyKind::Ack)?;
+    Ok(lease::from_ack(ack, renewed_at)?)
+}
+
+/// The raw-L2 sender and receiver of one interface.
+type Link = (Box<dyn DataLinkSender>, Box<dyn DataLinkReceiver>);
+
+/// Opens the raw-L2 channel for `interface`.
+fn channel(interface: &NetworkInterface) -> Result<Link, DhcpError> {
+    let config_datalink = pnet_datalink::Config {
+        read_timeout: Some(RECEIVE_POLL),
+        promiscuous: false,
+        ..pnet_datalink::Config::default()
+    };
+    match pnet_datalink::channel(interface, config_datalink) {
+        Ok(Channel::Ethernet(tx, rx)) => Ok((tx, rx)),
+        Ok(_) => Err(LinuxError::Io("unsupported datalink channel".to_owned()).into()),
+        Err(error) => Err(LinuxError::Io(format!("open {}: {error}", interface.name)).into()),
+    }
 }
 
 /// The MAC address of `interface`, used to derive the EPG client identity when
