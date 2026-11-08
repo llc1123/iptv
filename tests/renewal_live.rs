@@ -6,7 +6,7 @@
 //!
 //! ```sh
 //! set -a; . var/iptv-e2e.env; set +a
-//! cargo test --manifest-path rust/Cargo.toml --test renewal_live -- --ignored --nocapture
+//! cargo test --test renewal_live -- --ignored --nocapture
 //! ```
 
 use iptv_media_server::dhcp::{ClientConfig, acquire_lease, renew_lease};

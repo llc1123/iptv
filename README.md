@@ -91,7 +91,7 @@ service and downloads the logos it points to.
 
 ## Rust media server
 
-`rust/` contains a Rust rewrite of the media server with the same endpoints as
+this crate contains the Rust server of the media server with the same endpoints as
 the Python server, and the same flags for the shared options (`--interface`,
 `--epg-mac`, `--stb-id`, `--user-id`, `--password`, `--authentication-url`,
 `--host`, `--port`, `--guide-past-days`, `--guide-future-days`,
@@ -108,7 +108,7 @@ server when the interface is not `eth0` and not in the environment. The
 systemd unit below relies on `IPTV_INTERFACE` and passes no `--interface`.
 
 The Python implementation remains the reference: deterministic fixtures generated from it by
-`tools/oracle/generate.py` live in `rust/tests/fixtures/` and pin the Rust
+`tools/oracle/generate.py` live in `tests/fixtures/` and pin the Rust
 output byte for byte. The only intended difference is that HLS resource URLs
 lose their `#fragment` before they are proxied.
 
@@ -148,7 +148,7 @@ Prepare the host once, then run the offline gate:
 
 ```bash
 rustup toolchain install 1.87.0 --profile minimal --component rustfmt --component clippy
-rustup run 1.87.0 cargo fetch --manifest-path rust/Cargo.toml --locked
+rustup run 1.87.0 cargo fetch --locked
 uv sync
 bash scripts/verify.sh
 ```
@@ -171,7 +171,7 @@ maintained by the operator; channels with such a file get a `tvg-logo`/`icon`
 pointing at `/logos/<channel-id>`, others get none. Files are checked on each
 feed render, so logos added later appear after the next metadata refresh.
 
-`systemd/iptv-media-server.service` is a unit template that reads the same
+`deploy/systemd/iptv-media-server.service` is a unit template that reads the same
 variables from `/opt/iptv/var/iptv.env` and grants only `CAP_NET_RAW` and
 `CAP_NET_ADMIN`, which DHCP needs.
 
@@ -185,11 +185,11 @@ with nothing else installed:
 
 ```bash
 rustup target add --toolchain 1.87.0 x86_64-unknown-linux-musl aarch64-unknown-linux-musl
-rustup run 1.87.0 cargo build --manifest-path rust/Cargo.toml --release \
+rustup run 1.87.0 cargo build  --release \
   --target x86_64-unknown-linux-musl
 # Cross targets link with the bundled LLD; no C cross toolchain is needed.
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
-  rustup run 1.87.0 cargo build --manifest-path rust/Cargo.toml --release \
+  rustup run 1.87.0 cargo build  --release \
   --target aarch64-unknown-linux-musl
 ```
 
@@ -201,7 +201,7 @@ At run time the process needs `CAP_NET_RAW` and `CAP_NET_ADMIN`, `/proc`
 `--network host --cap-add NET_RAW --cap-add NET_ADMIN` for a container.
 ### OpenWrt
 
-`openwrt/luci-app-iptv` is a LuCI application (JavaScript views, no
+`deploy/openwrt/luci-app-iptv` is a LuCI application (JavaScript views, no
 `luci-compat`) with a procd service, a UCI config (`/etc/config/iptv`) and
 `Services > IPTV` pages for status, settings and the log. It depends on
 `rpcd-mod-file`. The service runs in one of two modes:

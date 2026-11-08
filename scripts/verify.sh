@@ -12,11 +12,11 @@ run() {
 }
 
 cargo=(rustup run 1.87.0 cargo)
-manifest=(--manifest-path rust/Cargo.toml --offline --locked)
+manifest=(--offline --locked)
 
-run "${cargo[@]}" fmt --manifest-path rust/Cargo.toml --all -- --check
+run "${cargo[@]}" fmt --all -- --check
 run "${cargo[@]}" clippy "${manifest[@]}" --all-targets --all-features -- -D warnings
 run "${cargo[@]}" test "${manifest[@]}" --tests --bins --all-features
-run uv run --offline --no-sync python tools/oracle/generate.py --check --output-dir rust/tests/fixtures
+run uv run --offline --no-sync python tools/oracle/generate.py --check --output-dir tests/fixtures
 run "${cargo[@]}" build "${manifest[@]}" --release --bin iptv-media-server
 printf 'PASS: local verification completed\n'

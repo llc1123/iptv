@@ -12,7 +12,7 @@ fi
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 ENV_FILE=$ROOT/var/iptv-e2e.env
-SERVER=$ROOT/rust/target/release/iptv-media-server
+SERVER=$ROOT/target/release/iptv-media-server
 PORT=${IPTV_E2E_PORT:-8080}
 
 [[ -x "$SERVER" ]] || { printf 'REFUSE: build %s first\n' "${SERVER#"$ROOT"/}" >&2; exit 2; }
