@@ -91,16 +91,23 @@ service and downloads the logos it points to.
 
 ## Rust media server
 
-`rust/` contains a Rust rewrite of the media server with the same endpoints
-and environment variables as the Python server, and the same flags for the
-shared options (`--interface`, `--epg-mac`, `--stb-id`, `--user-id`,
-`--password`, `--authentication-url`, `--host`, `--port`, `--guide-past-days`,
-`--guide-future-days`, `--guide-timezone`, `--guide-cache`). It has no
-`--logo-catalog` or `--metadata-converter-url`: logos come from `--logo-dir`
-(see below) and there is no catalog builder. `--stb-id-prefix` and
-`--refresh-interval-seconds` exist only in the Rust server. The Python
-implementation remains the
-reference: deterministic fixtures generated from it by
+`rust/` contains a Rust rewrite of the media server with the same endpoints as
+the Python server, and the same flags for the shared options (`--interface`,
+`--epg-mac`, `--stb-id`, `--user-id`, `--password`, `--authentication-url`,
+`--host`, `--port`, `--guide-past-days`, `--guide-future-days`,
+`--guide-timezone`, `--guide-cache`). It has no `--logo-catalog` or
+`--metadata-converter-url`: logos come from `--logo-dir` (see below) and there
+is no catalog builder. `--stb-id-prefix` and `--refresh-interval-seconds`
+exist only in the Rust server.
+
+Both servers read `IPTV_EPG_MAC`, `IPTV_DHCP_USER`, `IPTV_DHCP_PASSWORD`,
+`IPTV_USER_ID`, `IPTV_PASSWORD` and `IPTV_AUTH_URL`. The Rust server also reads
+`IPTV_INTERFACE` and `IPTV_STB_ID_PREFIX`; Python ignores both, so it uses
+`eth0` unless `--interface` is given. Pass `--interface` explicitly to either
+server when the interface is not `eth0` and not in the environment. The
+systemd unit below relies on `IPTV_INTERFACE` and passes no `--interface`.
+
+The Python implementation remains the reference: deterministic fixtures generated from it by
 `tools/oracle/generate.py` live in `rust/tests/fixtures/` and pin the Rust
 output byte for byte. The only intended difference is that HLS resource URLs
 lose their `#fragment` before they are proxied.
