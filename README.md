@@ -188,8 +188,11 @@ in Rust 1.87 and need a nightly toolchain with `-Zbuild-std`.
 At run time the process needs `CAP_NET_RAW` and `CAP_NET_ADMIN`, `/proc`
 (to check them), and the IPTV interface in its network namespace, e.g.
 `--network host --cap-add NET_RAW --cap-add NET_ADMIN` for a container.
-On OpenWrt, a procd service with `respawn` takes the role of
-`Restart=on-failure`.
+On OpenWrt, `openwrt/iptv-media-server.init` is a procd service whose `respawn`
+takes the role of `Restart=on-failure`. Install it as
+`/etc/init.d/iptv-media-server` next to `/usr/bin/iptv-media-server` and
+`/etc/iptv.env` (mode 600), then `service iptv-media-server enable && service
+iptv-media-server start`.
 
 ## Public-release hygiene
 
