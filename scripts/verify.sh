@@ -44,5 +44,8 @@ for view in deploy/openwrt/luci-app-iptv/htdocs/luci-static/resources/view/iptv/
     deploy/openwrt/luci-app-iptv/htdocs/luci-static/resources/protocol/*.js; do
     run node --check "$view"
 done
+# The menu, ACL and views must agree, or a page renders nothing or cannot run
+# the helper it calls.
+run node scripts/check-luci.mjs
 
 printf 'PASS: local verification completed\n'

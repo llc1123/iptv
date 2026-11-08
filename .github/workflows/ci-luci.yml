@@ -3,9 +3,9 @@ name: LuCI
 on:
   push:
     branches: ['**']
-    paths: ['deploy/openwrt/luci-app-iptv/htdocs/**']
+    paths: ['deploy/openwrt/luci-app-iptv/htdocs/**', 'scripts/check-luci.mjs']
   pull_request:
-    paths: ['deploy/openwrt/luci-app-iptv/htdocs/**']
+    paths: ['deploy/openwrt/luci-app-iptv/htdocs/**', 'scripts/check-luci.mjs']
   workflow_dispatch:
 
 permissions:
@@ -37,22 +37,7 @@ jobs:
             node --check "$view"
           done
 
-      # Every route a view renders must exist in the ACL and menu files, or the
-      # page 404s or fails with a permission error on the router.
-      - name: Declared routes have ACL and menu entries
-        run: |
-          node -e '
-            const fs = require("fs");
-            const base = "deploy/openwrt/luci-app-iptv/root/usr/share";
-            const menu = JSON.parse(fs.readFileSync(`${base}/luci/menu.d/luci-app-iptv.json`, "utf8"));
-            const acl = JSON.parse(fs.readFileSync(`${base}/rpcd/acl.d/luci-app-iptv.json`, "utf8"));
-            const paths = Object.keys(menu.luci).map(k => menu.luci[k].path);
-            const expected = ["admin/services/iptv/settings", "admin/services/iptv/status", "admin/services/iptv/log"];
-            for (const want of expected) {
-              if (!paths.includes(want)) { console.error(`menu is missing ${want}`); process.exit(1); }
-            }
-            if (!acl["luci-app-iptv"] || !acl["luci-app-iptv"].read) {
-              console.error("acl is missing the read grant"); process.exit(1);
-            }
-            console.log("menu and acl cover the declared routes");
-          '
+      # Every menu entry must point at a real view, and every helper a view runs
+      # must be granted in the ACL, or the page renders nothing or is denied.
+      - name: Menu, ACL and views agree
+        run: node scripts/check-luci.mjs
