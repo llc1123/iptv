@@ -52,6 +52,7 @@ pub async fn refresh_once(
         .collect::<Vec<_>>();
     let attempted = requests.len();
     let mut programmes = Vec::new();
+    let mut retained = Vec::new();
     let mut pending = requests;
     let mut fetched = 0_usize;
     // The provider sheds load with HTTP 503; failed windows are retried a few
@@ -81,7 +82,7 @@ pub async fn refresh_once(
                 Err(EpgError::Status(503)) => pending.push(query),
                 Err(error) => {
                     tracing::debug!(%error, channel_id = %query.channel_id, "programme window failed");
-                    retain_previous(&mut programmes, previous, &query);
+                    retain_previous(&mut retained, previous, &query);
                 }
             }
         }
@@ -97,11 +98,37 @@ pub async fn refresh_once(
             attempted,
             "programme windows still unavailable after retries"
         );
+        for query in &pending {
+            retain_previous(&mut retained, previous, query);
+        }
     }
-    for query in &pending {
-        retain_previous(&mut programmes, previous, query);
-    }
+    merge_retained(&mut programmes, retained);
     Ok((channels, programmes))
+}
+
+/// Appends retained programmes that `programmes` does not already hold.
+///
+/// Windows overlap at their boundary, so the same programme can be retained
+/// for two of them; only retained entries are deduplicated, because fetched
+/// ones keep the provider's own records, as in Python.
+fn merge_retained(programmes: &mut Vec<Programme>, retained: Vec<Programme>) {
+    let mut seen: std::collections::HashSet<_> = programmes.iter().map(identity).collect();
+    programmes.extend(retained.into_iter().filter(|p| seen.insert(identity(p))));
+}
+
+/// Resolves once shutdown is requested, including a sender already dropped.
+async fn shutdown_signal(shutdown: &mut watch::Receiver<bool>) {
+    let _ = shutdown.wait_for(|stop| *stop).await;
+}
+
+/// What makes two programme records the same entry.
+fn identity(programme: &Programme) -> (String, i64, i64, String) {
+    (
+        programme.channel_id.clone(),
+        programme.start_time_ms,
+        programme.end_time_ms,
+        programme.programme_id.clone(),
+    )
 }
 
 /// Keeps the previous snapshot's programmes for a window that could not be
@@ -163,7 +190,16 @@ pub async fn run_loop(
         let previous = state.read().await;
         let previous_programmes = previous.programmes_shared();
         drop(previous);
-        let result = refresh_once(&client, &config, zone, Some(&previous_programmes)).await;
+        let result = tokio::select! {
+            result = refresh_once(&client, &config, zone, Some(&previous_programmes)) => result,
+            () = shutdown_signal(&mut shutdown) => {
+                let error = RequestError::new("service", "service is shutting down");
+                for reply in replies {
+                    let _ = reply.send(Err(error.clone()));
+                }
+                return;
+            }
+        };
         match result {
             Ok((channels, programmes)) => {
                 let snapshot = Snapshot::new(
@@ -204,5 +240,41 @@ pub async fn run_loop(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn programme(channel: &str, start: i64, end: i64) -> Programme {
+        Programme {
+            title: "Programme".to_owned(),
+            start_time_ms: start,
+            end_time_ms: end,
+            programme_id: String::new(),
+            channel_id: channel.to_owned(),
+        }
+    }
+
+    #[test]
+    fn retained_programmes_are_added_once() {
+        let mut programmes = vec![programme("a", 0, 1_000)];
+        // Adjacent windows both retained the boundary-crossing programme.
+        let retained = vec![
+            programme("a", 900, 1_100),
+            programme("a", 900, 1_100),
+            programme("a", 0, 1_000),
+            programme("b", 900, 1_100),
+        ];
+        merge_retained(&mut programmes, retained);
+        assert_eq!(
+            programmes,
+            [
+                programme("a", 0, 1_000),
+                programme("a", 900, 1_100),
+                programme("b", 900, 1_100),
+            ]
+        );
     }
 }

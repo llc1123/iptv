@@ -8,10 +8,7 @@ fn html5_unescape(value: &str) -> String {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] != b'&' {
-            let character = value[index..]
-                .chars()
-                .next()
-                .map_or('\u{FFFD}', |character| character);
+            let character = value[index..].chars().next().unwrap_or('\u{FFFD}');
             output.push(character);
             index += character.len_utf8();
             continue;
@@ -106,8 +103,8 @@ fn numeric_entity(value: &str) -> Option<(usize, char)> {
                 0x2013, 0x2014, 0x2DC, 0x2122, 0x161, 0x203A, 0x153, 0x9D, 0x17E, 0x178,
             ][usize::try_from(number - 0x80).ok()?],
         )
-        .map_or('\u{FFFD}', |character| character),
-        Some(number) => char::from_u32(number).map_or('\u{FFFD}', |character| character),
+        .unwrap_or('\u{FFFD}'),
+        Some(number) => char::from_u32(number).unwrap_or('\u{FFFD}'),
     };
     let has_semicolon = digits.as_bytes().get(digit_count) == Some(&b';');
     Some((

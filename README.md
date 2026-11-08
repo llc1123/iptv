@@ -91,9 +91,15 @@ service and downloads the logos it points to.
 
 ## Rust media server
 
-`rust/` contains a Rust rewrite of the media server with the same endpoints,
-flags (`--interface`, `--user-id`, `--password`, ...) and environment
-variables as the Python server. The Python implementation remains the
+`rust/` contains a Rust rewrite of the media server with the same endpoints
+and environment variables as the Python server, and the same flags for the
+shared options (`--interface`, `--epg-mac`, `--stb-id`, `--user-id`,
+`--password`, `--authentication-url`, `--host`, `--port`, `--guide-past-days`,
+`--guide-future-days`, `--guide-timezone`, `--guide-cache`). It has no
+`--logo-catalog` or `--metadata-converter-url`: logos come from `--logo-dir`
+(see below) and there is no catalog builder. `--stb-id-prefix` and
+`--refresh-interval-seconds` exist only in the Rust server. The Python
+implementation remains the
 reference: deterministic fixtures generated from it by
 `tools/oracle/generate.py` live in `rust/tests/fixtures/` and pin the Rust
 output byte for byte. The only intended difference is that HLS resource URLs

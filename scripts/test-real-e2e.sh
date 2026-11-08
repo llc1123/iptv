@@ -18,6 +18,14 @@ PORT=${IPTV_E2E_PORT:-8080}
 [[ -x "$SERVER" ]] || { printf 'REFUSE: build %s first\n' "${SERVER#"$ROOT"/}" >&2; exit 2; }
 [[ -f "$ENV_FILE" ]] || { printf 'REFUSE: var/iptv-e2e.env is missing\n' >&2; exit 2; }
 [[ $(stat -c '%a' "$ENV_FILE") == 600 ]] || { printf 'REFUSE: var/iptv-e2e.env must be mode 600\n' >&2; exit 2; }
+# Another server answering here would make the probes pass without this binary.
+if (exec 3<>"/dev/tcp/127.0.0.1/$PORT" && exec 3<&-) 2>/dev/null; then
+    printf 'REFUSE: something already listens on port %s\n' "$PORT" >&2
+    exit 2
+fi
+# The server resolves its default guide cache and logo directory relative to
+# the working directory, which is the repository root in a deployment.
+cd -- "$ROOT"
 
 LOG=$(mktemp)
 SERVER_PID=''

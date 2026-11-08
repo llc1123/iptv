@@ -688,7 +688,6 @@ dependencies = [
  "futures-util",
  "getrandom",
  "hex",
- "libc",
  "md-5",
  "netlink-sys",
  "pnet_datalink",
