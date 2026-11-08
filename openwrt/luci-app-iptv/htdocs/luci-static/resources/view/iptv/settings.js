@@ -50,10 +50,14 @@ return view.extend({
 
 		o = s.option(form.Value, 'dhcp_user', _('DHCP user'));
 		o.rmempty = false;
+		// netifd's iptv interface holds these in managed mode.
+		o.depends('managed', '0');
 
 		o = s.option(form.Value, 'dhcp_password', _('DHCP password'));
 		o.password = true;
 		o.rmempty = false;
+		// netifd's iptv interface holds these in managed mode.
+		o.depends('managed', '0');
 
 		o = s.option(form.Value, 'epg_user', _('EPG user'));
 		o.rmempty = false;

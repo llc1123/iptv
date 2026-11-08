@@ -53,9 +53,8 @@ proto_iptv_renew() {
 proto_iptv_teardown() {
 	local interface="$1"
 
+	# netifd withdraws the addresses and routes itself, as with udhcpc.
 	proto_kill_command "$interface"
-	proto_init_update "*" 0
-	proto_send_update "$interface"
 }
 
 add_protocol iptv

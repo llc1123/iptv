@@ -9,4 +9,6 @@ case "$lines" in
 esac
 [ "$lines" -gt 2000 ] && lines=2000
 
-logread -e iptv_media_server 2>/dev/null | tail -n "$lines"
+# Server output carries the iptv_media_server target; the init script and
+# procd log under the iptv-media-server tag.
+logread -e 'iptv[-_]media[-_]server' 2>/dev/null | tail -n "$lines"

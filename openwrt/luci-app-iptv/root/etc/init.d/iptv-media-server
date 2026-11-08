@@ -83,9 +83,9 @@ start_service() {
 		IPTV_USER_ID="$epg_user" \
 		IPTV_PASSWORD="$epg_password"
 
-	[ -n "$epg_mac" ] && procd_set_param env IPTV_EPG_MAC="$epg_mac"
-	[ -n "$stb_id_prefix" ] && procd_set_param env IPTV_STB_ID_PREFIX="$stb_id_prefix"
-	[ -n "$authentication_url" ] && procd_set_param env IPTV_AUTH_URL="$authentication_url"
+	[ -n "$epg_mac" ] && procd_append_param env IPTV_EPG_MAC="$epg_mac"
+	[ -n "$stb_id_prefix" ] && procd_append_param env IPTV_STB_ID_PREFIX="$stb_id_prefix"
+	[ -n "$authentication_url" ] && procd_append_param env IPTV_AUTH_URL="$authentication_url"
 
 	procd_set_param respawn 3600 5 0
 	procd_set_param stdout 1

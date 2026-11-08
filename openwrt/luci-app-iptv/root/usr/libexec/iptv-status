@@ -9,7 +9,13 @@ config_get interface main interface 'eth1'
 config_get port main port '8080'
 config_get route_table main route_table '4788'
 
-pid="$(pidof iptv-media-server 2>/dev/null | awk '{print $1}')"
+# The media server, not the lease daemon netifd runs under the same name.
+pid=
+for candidate in $(pidof iptv-media-server 2>/dev/null); do
+	tr '\0' ' ' < "/proc/$candidate/cmdline" 2>/dev/null | grep -q -- '--lease-daemon' && continue
+	pid="$candidate"
+	break
+done
 
 json_string() {
 	printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
