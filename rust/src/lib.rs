@@ -9,6 +9,7 @@ pub mod error;
 pub mod guide;
 pub mod hls;
 pub mod http;
+pub mod lease_mode;
 pub mod logos;
 pub mod refresh;
 pub mod render;
@@ -29,5 +30,11 @@ pub fn load_config() -> Result<config::Config, Box<dyn std::error::Error + Send 
 /// # Errors
 /// Returns a fixed operational error when startup or serving is refused.
 pub async fn run(config: config::Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if config.lease_only {
+        // Printed for the caller to evaluate; nothing else happens in this mode.
+        let report = lease_mode::acquire(&config)?;
+        print!("{}", report.lines());
+        return Ok(());
+    }
     startup::run(config).await
 }

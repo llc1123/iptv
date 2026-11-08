@@ -1,0 +1,62 @@
+#!/bin/sh
+# Prints one JSON object describing the running service for the LuCI status
+# view. Read-only; no jq or lua is required on the router.
+
+. /lib/functions.sh
+
+config_load iptv
+config_get interface main interface 'eth1'
+config_get port main port '8080'
+config_get route_table main route_table '4788'
+
+pid="$(pidof iptv-media-server 2>/dev/null | awk '{print $1}')"
+
+json_string() {
+	printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+}
+
+json_number() {
+	case "$1" in
+		''|*[!0-9]*) printf 'null' ;;
+		*) printf '%s' "$1" ;;
+	esac
+}
+
+running=false
+uptime=0
+if [ -n "$pid" ] && [ -r "/proc/$pid/stat" ]; then
+	running=true
+	# Field 22 of /proc/<pid>/stat is the start time in clock ticks since boot.
+	started=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /\)$/) { print $(i + 20); exit } }' "/proc/$pid/stat" 2>/dev/null)
+	boot=$(awk '{ print int($1) }' /proc/uptime 2>/dev/null)
+	case "$started" in
+		''|*[!0-9]*) uptime=0 ;;
+		*) uptime=$(( boot - started / 100 )); [ "$uptime" -ge 0 ] || uptime=0 ;;
+	esac
+fi
+
+health=false
+if [ "$running" = "true" ] && command -v wget >/dev/null 2>&1; then
+	wget -q -O /dev/null -T 2 "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && health=true
+fi
+
+address="$(ip -4 -o addr show dev "$interface" 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "inet") { print $(i + 1); exit } }')"
+routes=0
+rules=0
+if [ -n "$route_table" ]; then
+	routes=$(ip route show table all 2>/dev/null | grep -c " table $route_table ")
+	rules=$(ip rule show 2>/dev/null | grep -c "lookup $route_table ")
+fi
+
+printf '{'
+printf '"running":%s,' "$running"
+printf '"pid":%s,' "$(json_number "$pid")"
+printf '"uptime":%s,' "$(json_number "$uptime")"
+printf '"health":%s,' "$health"
+printf '"interface":%s,' "$(json_string "$interface")"
+printf '"address":%s,' "$(json_string "$address")"
+printf '"port":%s,' "$(json_number "$port")"
+printf '"route_table":%s,' "$(json_number "$route_table")"
+printf '"routes":%s,' "$(json_number "$routes")"
+printf '"rules":%s' "$(json_number "$rules")"
+printf '}\n'

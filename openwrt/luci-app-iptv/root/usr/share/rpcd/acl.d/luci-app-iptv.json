@@ -1,0 +1,18 @@
+{
+	"luci-app-iptv": {
+		"description": "Grant access to the IPTV media server configuration, status and log",
+		"read": {
+			"uci": [ "iptv" ],
+			"file": {
+				"/usr/libexec/iptv-status": [ "exec" ],
+				"/usr/libexec/iptv-log": [ "exec" ]
+			}
+		},
+		"write": {
+			"uci": [ "iptv" ],
+			"file": {
+				"/etc/init.d/iptv-media-server": [ "exec" ]
+			}
+		}
+	}
+}

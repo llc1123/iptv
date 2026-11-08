@@ -1,0 +1,12 @@
+#!/bin/sh
+# Prints the most recent system-log lines for the service, newest last.
+#
+# Usage: iptv-log [lines]
+
+lines="${1:-300}"
+case "$lines" in
+	''|*[!0-9]*) lines=300 ;;
+esac
+[ "$lines" -gt 2000 ] && lines=2000
+
+logread -e iptv_media_server 2>/dev/null | tail -n "$lines"

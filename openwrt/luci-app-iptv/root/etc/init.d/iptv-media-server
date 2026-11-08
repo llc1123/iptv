@@ -1,0 +1,79 @@
+#!/bin/sh /etc/rc.common
+# procd service for the Rust IPTV media server on OpenWrt.
+#
+# Configuration lives in /etc/config/iptv (the luci-app-iptv interface edits
+# it); credentials are handed to the server through the environment so they
+# never appear on a command line. procd's respawn replaces systemd's
+# Restart=on-failure when a DHCP lease expires or the server hands out a
+# different address.
+
+USE_PROCD=1
+START=95
+STOP=10
+
+start_service() {
+	local enabled interface host port route_table dhcp_user dhcp_password epg_user epg_password
+	local epg_mac stb_id_prefix authentication_url guide_past_days guide_future_days
+	local guide_timezone guide_cache logo_dir refresh_interval_seconds
+
+	config_load iptv
+	config_get_bool enabled main enabled 1
+	[ "$enabled" = "1" ] || return 0
+
+	config_get interface main interface 'eth1'
+	config_get host main host '0.0.0.0'
+	config_get port main port '8080'
+	config_get route_table main route_table '4788'
+	config_get dhcp_user main dhcp_user ''
+	config_get dhcp_password main dhcp_password ''
+	config_get epg_user main epg_user ''
+	config_get epg_password main epg_password ''
+	config_get epg_mac main epg_mac ''
+	config_get stb_id_prefix main stb_id_prefix ''
+	config_get authentication_url main authentication_url ''
+	config_get guide_past_days main guide_past_days '7'
+	config_get guide_future_days main guide_future_days '2'
+	config_get guide_timezone main guide_timezone 'Asia/Shanghai'
+	config_get guide_cache main guide_cache '/var/lib/iptv/guide.json'
+	config_get logo_dir main logo_dir '/etc/iptv/logos'
+	config_get refresh_interval_seconds main refresh_interval_seconds '3600'
+
+	mkdir -p "$(dirname "$guide_cache")"
+
+	procd_open_instance
+	procd_set_param command /usr/bin/iptv-media-server \
+		--interface "$interface" \
+		--host "$host" \
+		--port "$port" \
+		--route-table "$route_table" \
+		--guide-past-days "$guide_past_days" \
+		--guide-future-days "$guide_future_days" \
+		--guide-timezone "$guide_timezone" \
+		--guide-cache "$guide_cache" \
+		--logo-dir "$logo_dir" \
+		--refresh-interval-seconds "$refresh_interval_seconds"
+
+	procd_set_param env \
+		IPTV_DHCP_USER="$dhcp_user" \
+		IPTV_DHCP_PASSWORD="$dhcp_password" \
+		IPTV_USER_ID="$epg_user" \
+		IPTV_PASSWORD="$epg_password"
+
+	[ -n "$epg_mac" ] && procd_set_param env IPTV_EPG_MAC="$epg_mac"
+	[ -n "$stb_id_prefix" ] && procd_set_param env IPTV_STB_ID_PREFIX="$stb_id_prefix"
+	[ -n "$authentication_url" ] && procd_set_param env IPTV_AUTH_URL="$authentication_url"
+
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger iptv
+}
+
+reload_service() {
+	stop
+	start
+}

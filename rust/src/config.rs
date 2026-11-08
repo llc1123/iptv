@@ -85,17 +85,31 @@ pub struct Config {
         value_parser = clap::value_parser!(u32).range(1..=32765)
     )]
     pub route_table: u32,
+    /// Acquire the DHCP lease, print it for netifd and exit without serving:
+    /// the integration point for an `OpenWrt` protocol handler, where
+    /// netifd owns the address and routes.
+    #[arg(long)]
+    pub lease_only: bool,
 }
 
 impl Config {
     pub fn from_environment() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let config = Self::parse();
-        for (value, name) in [
-            (&config.dhcp_user, "IPTV_DHCP_USER"),
-            (&config.dhcp_password, "IPTV_DHCP_PASSWORD"),
-            (&config.epg_user, "IPTV_USER_ID"),
-            (&config.epg_password, "IPTV_PASSWORD"),
-        ] {
+        // Lease-only runs serve nothing, so the EPG credentials are unused.
+        let credentials: &[(&crate::config::Secret, &'static str)] = if config.lease_only {
+            &[
+                (&config.dhcp_user, "IPTV_DHCP_USER"),
+                (&config.dhcp_password, "IPTV_DHCP_PASSWORD"),
+            ]
+        } else {
+            &[
+                (&config.dhcp_user, "IPTV_DHCP_USER"),
+                (&config.dhcp_password, "IPTV_DHCP_PASSWORD"),
+                (&config.epg_user, "IPTV_USER_ID"),
+                (&config.epg_password, "IPTV_PASSWORD"),
+            ]
+        };
+        for (value, name) in credentials {
             if value.as_str().is_empty() {
                 return Err(Box::new(ConfigError::MissingCredential(name)));
             }
