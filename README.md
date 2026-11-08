@@ -191,11 +191,40 @@ in Rust 1.87 and need a nightly toolchain with `-Zbuild-std`.
 At run time the process needs `CAP_NET_RAW` and `CAP_NET_ADMIN`, `/proc`
 (to check them), and the IPTV interface in its network namespace, e.g.
 `--network host --cap-add NET_RAW --cap-add NET_ADMIN` for a container.
-On OpenWrt, `openwrt/iptv-media-server.init` is a procd service whose `respawn`
-takes the role of `Restart=on-failure`. Install it as
-`/etc/init.d/iptv-media-server` next to `/usr/bin/iptv-media-server` and
-`/etc/iptv.env` (mode 600), then `service iptv-media-server enable && service
-iptv-media-server start`.
+### OpenWrt
+
+`openwrt/luci-app-iptv` is a LuCI application (JavaScript views, no
+`luci-compat`) with a procd service, a UCI config (`/etc/config/iptv`) and
+`Services > IPTV` pages for status, settings and the log. It depends on
+`rpcd-mod-file`. The service runs in one of two modes:
+
+- **Standalone** (`option managed '0'`): one process does everything, exactly
+  as on any other Linux host: it acquires and renews the lease, configures the
+  interface and routing table itself, and serves.
+- **Managed by netifd** (`option managed '1'`): the router's own network stack
+  owns the interface. Add an interface with the `iptv` protocol, for example
+
+  ```
+  config interface 'iptv'
+  	option proto 'iptv'
+  	option device 'eth1'
+  	option ip4table '4788'
+  	option dhcp_user '...'
+  	option dhcp_password '...'
+  ```
+
+  netifd then runs `iptv-media-server --lease-daemon`, which acquires and
+  renews the lease and reports it through `/usr/libexec/iptv-lease-report`, the
+  same way `udhcpc` reports through `/lib/netifd/dhcp.script`. The lease shows
+  under `Network > Interfaces`, the routes and rules under `Status > Routing`,
+  and `ip4table` keeps the IPTV routes out of the main table. The media server
+  runs with `--network-managed --lease-address <address>`, never touches the
+  network itself, and is restarted by procd whenever the `iptv` interface
+  changes. netifd's rules also send traffic *to* the IPTV subnet through that
+  table, which the standalone mode does not do.
+
+procd's `respawn` takes the role of systemd's `Restart=on-failure` in both
+modes.
 
 ## Public-release hygiene
 

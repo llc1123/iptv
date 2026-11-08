@@ -1,6 +1,6 @@
 use crate::{
     config::Config,
-    dhcp::{ClientConfig, acquire_lease, configure_interface},
+    dhcp::{ClientConfig, acquire_lease, configure_interface, interface_mac},
     epg::{EpgClient, EpgConfig},
     guide::{GuideCache, GuideZone},
     hls::TokenStore,
@@ -92,37 +92,53 @@ async fn start(
     zone: GuideZone,
     shutdown_rx: watch::Receiver<bool>,
 ) -> Result<Service, StartupError> {
-    let interface = config.interface.clone();
-    let dhcp_user = config.dhcp_user.as_str().to_owned();
-    let dhcp_password = config.dhcp_password.as_str().to_owned();
-    let prefix = config.stb_id_prefix.clone();
-    let renewal = Renewal {
-        interface: interface.clone(),
-        user: dhcp_user.clone(),
-        password: dhcp_password.clone(),
-        stb_id_prefix: prefix.clone(),
-        route_table: config.route_table,
-    };
-    let route_table = config.route_table;
-    let (lease, interface_mac) = tokio::task::spawn_blocking(move || {
-        let client_config = ClientConfig {
-            user: &dhcp_user,
-            password: &dhcp_password,
-            stb_id_prefix: &prefix,
+    // netifd owns the interface in managed mode: the address comes from it and
+    // this process never configures the network or renews anything.
+    let (source_ip, interface_mac, renewal) = if config.network_managed {
+        let address = config
+            .lease_address
+            .ok_or("--network-managed requires --lease-address")?;
+        let interface = config.interface.clone();
+        let mac = tokio::task::spawn_blocking(move || interface_mac(&interface)).await??;
+        (
+            IpAddr::V4(address),
+            mac,
+            tokio::spawn(std::future::pending()),
+        )
+    } else {
+        let interface = config.interface.clone();
+        let dhcp_user = config.dhcp_user.as_str().to_owned();
+        let dhcp_password = config.dhcp_password.as_str().to_owned();
+        let prefix = config.stb_id_prefix.clone();
+        let renewal = Renewal {
+            interface: interface.clone(),
+            user: dhcp_user.clone(),
+            password: dhcp_password.clone(),
+            stb_id_prefix: prefix.clone(),
+            route_table: config.route_table,
         };
-        let (lease, mac) = acquire_lease(&interface, &client_config)?;
-        configure_interface(&interface, &lease, route_table)?;
-        Ok::<_, crate::dhcp::DhcpError>((lease, mac))
-    })
-    .await??;
-    let renewal = tokio::spawn(renewal.run(lease.clone(), shutdown_rx.clone()));
+        let route_table = config.route_table;
+        let (lease, mac) = tokio::task::spawn_blocking(move || {
+            let client_config = ClientConfig {
+                user: &dhcp_user,
+                password: &dhcp_password,
+                stb_id_prefix: &prefix,
+            };
+            let (lease, mac) = acquire_lease(&interface, &client_config)?;
+            configure_interface(&interface, &lease, route_table)?;
+            Ok::<_, crate::dhcp::DhcpError>((lease, mac))
+        })
+        .await??;
+        let renewal = tokio::spawn(renewal.run(lease.clone(), shutdown_rx.clone()));
+        (IpAddr::V4(lease.address), mac, renewal)
+    };
     let epg = EpgClient::new(EpgConfig {
         authentication_url: config.authentication_url.clone(),
         user_id: config.epg_user.as_str().to_owned(),
         password: config.epg_password.as_str().to_owned(),
         stb_id: config.stb_id.clone(),
         stb_mac: epg_mac(config.epg_mac.as_deref(), interface_mac),
-        source_ip: IpAddr::V4(lease.address),
+        source_ip,
         interface: Some(config.interface.clone()),
     })?;
     let guide_cache = GuideCache::new(config.guide_cache.clone());
@@ -185,7 +201,7 @@ async fn wait_shutdown(shutdown: &mut watch::Receiver<bool>) {
 
 /// Requests shutdown on Ctrl-C or SIGTERM. A handler that cannot be installed
 /// is logged and never fires, so it cannot stop a healthy server.
-async fn signal(sender: watch::Sender<bool>) {
+pub(crate) async fn signal(sender: watch::Sender<bool>) {
     let ctrl_c = async {
         if let Err(error) = tokio::signal::ctrl_c().await {
             tracing::error!(%error, "ctrl-c handler unavailable");

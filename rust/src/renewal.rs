@@ -13,8 +13,8 @@ use tokio::{
     time::{Instant, sleep_until},
 };
 
-const MIN_RETRY: Duration = Duration::from_secs(5);
-const MAX_RETRY: Duration = Duration::from_secs(60);
+pub(crate) const MIN_RETRY: Duration = Duration::from_secs(5);
+pub(crate) const MAX_RETRY: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Error)]
 pub enum RenewalError {
@@ -108,7 +108,7 @@ fn renew_at(lease: &DhcpLease) -> Instant {
 
 /// Retries at half the remaining lifetime, bounded so a short lease still
 /// gets several attempts and a long one is not hammered.
-fn retry_delay(remaining: Duration) -> Duration {
+pub(crate) fn retry_delay(remaining: Duration) -> Duration {
     (remaining / 2).clamp(MIN_RETRY, MAX_RETRY).min(remaining)
 }
 

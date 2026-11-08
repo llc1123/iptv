@@ -30,11 +30,10 @@ pub fn load_config() -> Result<config::Config, Box<dyn std::error::Error + Send 
 /// # Errors
 /// Returns a fixed operational error when startup or serving is refused.
 pub async fn run(config: config::Config) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if config.lease_only {
-        // Printed for the caller to evaluate; nothing else happens in this mode.
-        let report = lease_mode::acquire(&config)?;
-        print!("{}", report.lines());
-        return Ok(());
+    let script = config.lease_report.clone();
+    if config.lease_daemon {
+        // netifd owns the address; this process only keeps the lease alive.
+        return lease_mode::daemon(config, script).await.map_err(Into::into);
     }
     startup::run(config).await
 }

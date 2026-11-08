@@ -85,18 +85,29 @@ pub struct Config {
         value_parser = clap::value_parser!(u32).range(1..=32765)
     )]
     pub route_table: u32,
-    /// Acquire the DHCP lease, print it for netifd and exit without serving:
-    /// the integration point for an `OpenWrt` protocol handler, where
-    /// netifd owns the address and routes.
-    #[arg(long)]
-    pub lease_only: bool,
+    /// Hold the DHCP lease for netifd and report it through `--lease-report`,
+    /// renewing at half the lease. This process never serves HTTP; netifd owns
+    /// the address and routes.
+    #[arg(long, conflicts_with = "network_managed")]
+    pub lease_daemon: bool,
+    /// Script run with each lease report in its environment (`IPTV_ADDRESS`,
+    /// `IPTV_PREFIX`, `IPTV_GATEWAY`, ... and `IPTV_EVENT`).
+    #[arg(long, value_name = "SCRIPT", requires = "lease_daemon")]
+    pub lease_report: Option<std::path::PathBuf>,
+    /// Serve without touching the network: take the lease address from
+    /// `--lease-address` and let a supervisor own the interface.
+    #[arg(long, conflicts_with = "lease_daemon")]
+    pub network_managed: bool,
+    /// Address netifd put on the interface, required with `--network-managed`.
+    #[arg(long, value_name = "ADDRESS", requires = "network_managed")]
+    pub lease_address: Option<std::net::Ipv4Addr>,
 }
 
 impl Config {
     pub fn from_environment() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let config = Self::parse();
-        // Lease-only runs serve nothing, so the EPG credentials are unused.
-        let credentials: &[(&crate::config::Secret, &'static str)] = if config.lease_only {
+        // A lease daemon serves nothing, so the EPG credentials are unused.
+        let credentials: &[(&crate::config::Secret, &'static str)] = if config.lease_daemon {
             &[
                 (&config.dhcp_user, "IPTV_DHCP_USER"),
                 (&config.dhcp_password, "IPTV_DHCP_PASSWORD"),
@@ -113,6 +124,9 @@ impl Config {
             if value.as_str().is_empty() {
                 return Err(Box::new(ConfigError::MissingCredential(name)));
             }
+        }
+        if config.network_managed && config.lease_address.is_none() {
+            return Err(Box::new(ConfigError::MissingCredential("--lease-address")));
         }
         Ok(config)
     }

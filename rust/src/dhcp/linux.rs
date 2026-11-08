@@ -94,6 +94,16 @@ pub fn acquire_lease(
     Ok((lease::from_ack(ack, acquired_at)?, mac))
 }
 
+/// The MAC address of `interface`, used to derive the EPG client identity when
+/// netifd owns the address and no DHCP exchange happened here.
+pub fn interface_mac(interface: &str) -> Result<MacAddress, LinuxError> {
+    let interface = find_interface(interface)?;
+    interface
+        .mac
+        .map(|mac| MacAddress::new(mac.octets()))
+        .ok_or_else(|| LinuxError::Io(format!("{} has no MAC address", interface.name)))
+}
+
 /// Default policy routing table for traffic sourced from the lease address.
 /// Only that traffic reaches it, so the IPTV network never mixes with the
 /// host's routes, even when their subnets overlap. ("IPTV" on a keypad.)

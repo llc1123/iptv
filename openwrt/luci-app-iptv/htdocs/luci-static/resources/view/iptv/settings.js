@@ -18,6 +18,11 @@ return view.extend({
 		o.default = '1';
 		o.rmempty = false;
 
+		o = s.option(form.Flag, 'managed', _('Managed by netifd'),
+			_('Take the address from an IPTV interface configured with the iptv protocol instead of acquiring a lease here. Use this on a router whose interfaces are managed by netifd.'));
+		o.default = '0';
+		o.rmempty = false;
+
 		o = s.option(form.Value, 'interface', _('IPTV interface'),
 			_('Interface that reaches the provider, for example eth1 on a router with a dedicated IPTV port.'));
 		o.default = 'eth1';
@@ -34,7 +39,7 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.option(form.Value, 'route_table', _('Routing table'),
-			_('Table that carries the IPTV subnet, a default route and the matching rule. Must stay below the main table (32766).'));
+			_('Table that carries the IPTV subnet, a default route and the matching rule. Must stay below the main table (32766). Ignored when netifd manages the interface, where `option ip4table` on the IPTV interface decides.'));
 		o.datatype = 'range(1,32765)';
 		o.default = '4788';
 		o.rmempty = false;
