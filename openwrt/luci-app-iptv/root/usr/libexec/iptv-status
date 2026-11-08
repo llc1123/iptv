@@ -10,9 +10,13 @@ config_get port main port '8080'
 config_get route_table main route_table '4788'
 config_get_bool managed main managed 0
 if [ "$managed" = "1" ]; then
-	# netifd chooses the table through `option ip4table`; unset means main.
+	# netifd chooses the table through `option ip4table`; unset or `main` means
+	# the main table, which is table 254.
 	config_load network
-	config_get route_table iptv ip4table '4788'
+	config_get route_table iptv ip4table ''
+	case "$route_table" in
+		''|main) route_table=254 ;;
+	esac
 fi
 
 # The media server, not the lease daemon netifd runs under the same name.
@@ -55,12 +59,13 @@ fi
 address="$(ip -4 -o addr show dev "$interface" 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "inet") { print $(i + 1); exit } }')"
 routes=0
 rules=0
-if [ -n "$route_table" ] && [ "$route_table" != "main" ] && [ "$route_table" != "254" ]; then
-	routes=$(ip route show table all 2>/dev/null | grep -c " table $route_table ")
-	rules=$(ip rule show 2>/dev/null | grep -c "lookup $route_table ")
-else
+if [ "$route_table" = "254" ]; then
 	# The main table: count what this interface contributes to it.
 	routes=$(ip -4 route show 2>/dev/null | grep -c "dev $interface ")
+	rules=$(ip rule show 2>/dev/null | grep -c "lookup 254 ")
+else
+	routes=$(ip route show table all 2>/dev/null | grep -c " table $route_table ")
+	rules=$(ip rule show 2>/dev/null | grep -c "lookup $route_table ")
 fi
 
 printf '{'
