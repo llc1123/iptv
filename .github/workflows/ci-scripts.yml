@@ -1,0 +1,71 @@
+name: Scripts and fixtures
+
+on:
+  push:
+    branches: ['**']
+    paths: ['scripts/**', 'deploy/**', 'tests/fixtures/**', 'schemas/**']
+  pull_request:
+    paths: ['scripts/**', 'deploy/**', 'tests/fixtures/**', 'schemas/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell:
+    name: shellcheck and shfmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+          # Pinned: shfmt's formatting changes between minor versions.
+          curl -fsSL -o /tmp/shfmt \
+            https://github.com/mvdan/sh/releases/download/v3.8.0/shfmt_v3.8.0_linux_amd64
+          sudo install -m 0755 /tmp/shfmt /usr/local/bin/shfmt
+
+      # Only errors are enforced. The OpenWrt scripts legitimately use `local`,
+      # `[[ ]]` and procd variables that a warning-level pass flags as non-POSIX
+      # or unused-but-exported.
+      - name: Shellcheck
+        run: |
+          shellcheck --severity=error --external-sources \
+            deploy/openwrt/luci-app-iptv/root/etc/init.d/iptv-media-server \
+            deploy/openwrt/luci-app-iptv/root/usr/libexec/iptv-lease-report \
+            deploy/openwrt/luci-app-iptv/root/usr/libexec/iptv-log \
+            deploy/openwrt/luci-app-iptv/root/usr/libexec/iptv-status \
+            deploy/openwrt/luci-app-iptv/root/lib/netifd/proto/iptv.sh \
+            scripts/*.sh
+
+      - name: Shell formatting
+        run: |
+          shfmt -d -i 4 -ci -s scripts/*.sh
+          shfmt -d -i 0 -ci -s \
+            deploy/openwrt/luci-app-iptv/root/etc/init.d/iptv-media-server \
+            deploy/openwrt/luci-app-iptv/root/usr/libexec/iptv-lease-report \
+            deploy/openwrt/luci-app-iptv/root/usr/libexec/iptv-log \
+            deploy/openwrt/luci-app-iptv/root/usr/libexec/iptv-status \
+            deploy/openwrt/luci-app-iptv/root/lib/netifd/proto/iptv.sh
+
+  fixtures:
+    name: frozen fixture integrity
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust
+
+      - name: Verify the fixtures were not edited
+        run: cargo +1.87.0 test --locked --test fixture_integrity

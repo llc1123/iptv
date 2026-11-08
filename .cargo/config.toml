@@ -1,0 +1,11 @@
+# Cross musl targets link with the bundled LLD and the self-contained CRT that
+# ships with the target, so no C cross toolchain is needed and the result is
+# fully static. The host `cc` cannot link these: its own CRT is x86-64.
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"

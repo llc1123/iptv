@@ -1,0 +1,43 @@
+name: LuCI
+
+on:
+  push:
+    branches: ['**']
+    paths: ['deploy/openwrt/luci-app-iptv/htdocs/**', 'scripts/check-luci.mjs']
+  pull_request:
+    paths: ['deploy/openwrt/luci-app-iptv/htdocs/**', 'scripts/check-luci.mjs']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  views:
+    name: view syntax and menu wiring
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: LuCI JSON is valid
+        run: |
+          for f in $(git ls-files 'deploy/openwrt/luci-app-iptv/root/**/*.json'); do
+            node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))" "$f"
+          done
+
+      # The views are plain scripts that the LuCI loader wraps in a function,
+      # so they are neither ES modules nor runnable files: `node --check` is the
+      # parse check that fits them.
+      - name: View syntax
+        run: |
+          for view in $(git ls-files 'deploy/openwrt/luci-app-iptv/htdocs/*.js'); do
+            node --check "$view"
+          done
+
+      # Every menu entry must point at a real view, and every helper a view runs
+      # must be granted in the ACL, or the page renders nothing or is denied.
+      - name: Menu, ACL and views agree
+        run: node scripts/check-luci.mjs

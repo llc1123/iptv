@@ -15,14 +15,14 @@ if [ "$managed" = "1" ]; then
 	config_load network
 	config_get route_table iptv ip4table ''
 	case "$route_table" in
-		''|main) route_table=254 ;;
+		'' | main) route_table=254 ;;
 	esac
 fi
 
 # The media server, not the lease daemon netifd runs under the same name.
 pid=
 for candidate in $(pidof iptv-media-server 2>/dev/null); do
-	tr '\0' ' ' < "/proc/$candidate/cmdline" 2>/dev/null | grep -q -- '--lease-daemon' && continue
+	tr '\0' ' ' <"/proc/$candidate/cmdline" 2>/dev/null | grep -q -- '--lease-daemon' && continue
 	pid="$candidate"
 	break
 done
@@ -33,7 +33,7 @@ json_string() {
 
 json_number() {
 	case "$1" in
-		''|*[!0-9]*) printf 'null' ;;
+		'' | *[!0-9]*) printf 'null' ;;
 		*) printf '%s' "$1" ;;
 	esac
 }
@@ -46,8 +46,11 @@ if [ -n "$pid" ] && [ -r "/proc/$pid/stat" ]; then
 	started=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /\)$/) { print $(i + 20); exit } }' "/proc/$pid/stat" 2>/dev/null)
 	boot=$(awk '{ print int($1) }' /proc/uptime 2>/dev/null)
 	case "$started" in
-		''|*[!0-9]*) uptime=0 ;;
-		*) uptime=$(( boot - started / 100 )); [ "$uptime" -ge 0 ] || uptime=0 ;;
+		'' | *[!0-9]*) uptime=0 ;;
+		*)
+			uptime=$((boot - started / 100))
+			[ "$uptime" -ge 0 ] || uptime=0
+			;;
 	esac
 fi
 

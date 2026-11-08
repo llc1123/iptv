@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build and publish
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # OpenWrt arch names are the provider's, not Rust's: the package
+          # manager refuses a package whose Architecture does not match.
+          - name: x86_64
+            target: x86_64-unknown-linux-musl
+            openwrt_arch: x86_64
+          - name: aarch64
+            target: aarch64-unknown-linux-musl
+            openwrt_arch: aarch64_cortex-a53
+          - name: armv7
+            target: armv7-unknown-linux-musleabihf
+            openwrt_arch: arm_cortex-a7_neon-vfpv4
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Install the target
+        run: rustup target add --toolchain 1.87.0 ${{ matrix.target }}
+
+      # The bundled LLD links every musl target, so no C cross toolchain is
+      # needed and the result is fully static.
+      - name: Build
+        run: |
+          cargo +1.87.0 build --locked --release \
+            --target ${{ matrix.target }} --bin iptv-media-server
+
+      - name: Stage the binary
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/iptv-media-server" \
+             "dist/iptv-media-server_${version}_${{ matrix.name }}"
+          chmod 0755 "dist/iptv-media-server_${version}_${{ matrix.name }}"
+
+      - name: Build the OpenWrt package
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          ./scripts/make-openwrt-package.sh \
+            --binary "target/${{ matrix.target }}/release/iptv-media-server" \
+            --arch "${{ matrix.openwrt_arch }}" \
+            --version "$version" \
+            --output-dir dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      # `gh release create` is idempotent enough for a re-run: the tag exists,
+      # so the notes are updated and the assets replaced.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag=${GITHUB_REF_NAME}
+          gh release create "$tag" dist/* \
+            --title "IPTV media server $tag" \
+            --generate-notes \
+            --verify-tag
