@@ -70,6 +70,8 @@ pub fn build_discover(
     build(
         source,
         xid,
+        None,
+        Ipv4Addr::BROADCAST,
         &[
             (53, &[1]),
             (60, option60),
@@ -91,6 +93,8 @@ pub fn build_request(
     build(
         source,
         xid,
+        None,
+        Ipv4Addr::BROADCAST,
         &[
             (53, &[3]),
             (50, &requested),
@@ -101,11 +105,45 @@ pub fn build_request(
         ],
     )
 }
+/// A renewal REQUEST for the address already held: `ciaddr` carries it and the
+/// requesting-server options are omitted, so the server renews that binding
+/// instead of offering a free one.
+pub fn build_renew(
+    source: MacAddress,
+    xid: u32,
+    held: Ipv4Addr,
+    server: Ipv4Addr,
+    option60: &[u8],
+    hostname: &[u8],
+) -> Result<Vec<u8>, PacketError> {
+    build(
+        source,
+        xid,
+        Some(held),
+        server,
+        &[
+            (53, &[3]),
+            (60, option60),
+            (12, hostname),
+            (55, &PARAMETER_REQUEST_LIST),
+        ],
+    )
+}
+
 /// A broadcast DHCP client frame with `fields` as options, in order.
-fn build(source: MacAddress, xid: u32, fields: &[(u8, &[u8])]) -> Result<Vec<u8>, PacketError> {
+fn build(
+    source: MacAddress,
+    xid: u32,
+    ciaddr: Option<Ipv4Addr>,
+    destination: Ipv4Addr,
+    fields: &[(u8, &[u8])],
+) -> Result<Vec<u8>, PacketError> {
     let mut payload = vec![0; DHCP];
     payload[..3].copy_from_slice(&[1, 1, 6]);
     payload[4..8].copy_from_slice(&xid.to_be_bytes());
+    if let Some(address) = ciaddr {
+        payload[12..16].copy_from_slice(&address.octets());
+    }
     payload[28..34].copy_from_slice(&source.octets());
     payload[BOOTP..DHCP].copy_from_slice(&COOKIE);
     for (code, value) in fields {
@@ -114,16 +152,23 @@ fn build(source: MacAddress, xid: u32, fields: &[(u8, &[u8])]) -> Result<Vec<u8>
         payload.extend_from_slice(value);
     }
     payload.push(255);
-    frame(source, &payload, 68, 67)
+    frame(source, ciaddr, destination, &payload, 68, 67)
 }
 
-/// Wraps a UDP payload from 0.0.0.0 to 255.255.255.255 in IPv4 and Ethernet.
+/// Wraps a UDP payload in IPv4 and Ethernet. Renewal addresses the server that
+/// granted the lease, as the set-top box does and as RFC 2131 §4.1 prescribes;
+/// everything else is broadcast. Ethernet stays broadcast either way, because
+/// the server's MAC is unknown.
 fn frame(
     source: MacAddress,
+    source_ip: Option<Ipv4Addr>,
+    destination_ip: Ipv4Addr,
     payload: &[u8],
     source_port: u16,
     destination_port: u16,
 ) -> Result<Vec<u8>, PacketError> {
+    let source_ip = source_ip.unwrap_or(Ipv4Addr::UNSPECIFIED).octets();
+    let destination_ip = destination_ip.octets();
     let udp_len = u16::try_from(UDP + payload.len()).map_err(|_| PacketError::TooLarge)?;
     let ip_len = udp_len + 20;
     let mut out = Vec::with_capacity(ETH + usize::from(ip_len));
@@ -133,7 +178,9 @@ fn frame(
     let ip = out.len();
     out.extend_from_slice(&[0x45, 0]);
     out.extend_from_slice(&ip_len.to_be_bytes());
-    out.extend_from_slice(&[0, 1, 0, 0, 64, 17, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255]);
+    out.extend_from_slice(&[0, 1, 0, 0, 64, 17, 0, 0]);
+    out.extend_from_slice(&source_ip);
+    out.extend_from_slice(&destination_ip);
     let ip_checksum = checksum(&out[ip..]);
     out[ip + 10..ip + 12].copy_from_slice(&ip_checksum.to_be_bytes());
     let udp = out.len();
@@ -142,7 +189,9 @@ fn frame(
     out.extend_from_slice(&udp_len.to_be_bytes());
     out.extend_from_slice(&[0, 0]);
     out.extend_from_slice(payload);
-    let mut pseudo = vec![0, 0, 0, 0, 255, 255, 255, 255, 0, 17];
+    let mut pseudo = source_ip.to_vec();
+    pseudo.extend_from_slice(&destination_ip);
+    pseudo.extend_from_slice(&[0, 17]);
     pseudo.extend_from_slice(&udp_len.to_be_bytes());
     pseudo.extend_from_slice(&out[udp..]);
     out[udp + 6..udp + 8].copy_from_slice(&checksum(&pseudo).to_be_bytes());
@@ -293,7 +342,34 @@ mod tests {
             payload.extend_from_slice(value);
         }
         payload.push(255);
-        frame(MAC, &payload, 67, 68).unwrap_or_default()
+        frame(MAC, None, Ipv4Addr::BROADCAST, &payload, 67, 68).unwrap_or_default()
+    }
+
+    #[test]
+    fn renewal_carries_the_held_address_and_no_requesting_server_options() {
+        let renewal = build_renew(
+            MAC,
+            9,
+            Ipv4Addr::new(192, 0, 2, 44),
+            Ipv4Addr::new(192, 0, 2, 1),
+            &[0xaa],
+            b"STB",
+        )
+        .unwrap_or_default();
+        // ciaddr, not option 50, is what asks the server to extend this binding.
+        let ciaddr = ETH + 20 + UDP + 12;
+        assert_eq!(&renewal[ciaddr..ciaddr + 4], &[192, 0, 2, 44]);
+        // Addressed to the server that granted the lease, as the set-top box
+        // does, so no other server on the segment can answer the renewal.
+        let destination = ETH + 16;
+        assert_eq!(&renewal[destination..destination + 4], &[192, 0, 2, 1]);
+        assert_eq!(
+            option_bytes(&renewal),
+            &[
+                53, 1, 3, 60, 1, 0xaa, 12, 3, b'S', b'T', b'B', 55, 10, 1, 121, 33, 3, 6, 15, 28,
+                51, 58, 59, 255
+            ]
+        );
     }
 
     #[test]

@@ -112,20 +112,31 @@ The Python implementation remains the reference: deterministic fixtures generate
 output byte for byte. The only intended difference is that HLS resource URLs
 lose their `#fragment` before they are proxied.
 
-Unlike the Python server, the Rust server also renews its DHCP lease: it
-repeats the authenticated DHCP exchange at half the lease time and retries
-until expiry. If the lease expires or the server hands out a different
-address, the process exits with status 1 so a supervisor such as the systemd
-unit below restarts it on the new lease.
+Unlike the Python server, the Rust server also renews its DHCP lease. At half
+the lease time it sends a renewal REQUEST carrying the address it holds
+(`ciaddr`), a fresh authenticator, and the server that granted the lease as its
+destination, so the provider extends that binding instead of handing out
+whatever a fresh DISCOVER would offer. Measured on the live network: a DISCOVER
+at T1 was answered with a different address, while the renewal REQUEST kept the
+original one. A captured set-top box renews the same way — `ciaddr` set, no
+option 50 or 54, request addressed to the server — except that it also unicasts
+at layer two, which needs the server's MAC; the frame stays broadcast there.
+A refused renewal falls back to a full DISCOVER/REQUEST exchange, retried until
+expiry. If the lease expires or the
+provider assigns a different address, the process exits with status 1 so a
+supervisor such as the systemd unit below restarts it on the new lease.
 
 The Rust server keeps the IPTV network out of the host's routing. The leased
 address is added without a prefix route, and its subnet and a default route
-via the lease's router go into routing table 4788, which only traffic from
-the leased address reaches (`ip rule` priority 4788, ahead of `main`). The EPG
-and HLS clients bind to that address and the interface, so they reach the
-provider whatever the host's own routes or overlapping subnets are, and the
-host's other traffic never enters the IPTV network. No provider subnets are
-assumed; the Python server instead adds fixed routes to the main table.
+via the lease's router go into one routing table, which only traffic from the
+leased address reaches (`ip rule` priority equal to that table id, ahead of
+`main`). Both numbers come from `--route-table` (default 4788, "IPTV" on a
+keypad; range 1-32765 so the rule stays ahead of `main`). Raise it if a host
+already uses that table. The EPG and HLS clients bind to that address and the
+interface, so they reach the provider whatever the host's own routes or
+overlapping subnets are, and the host's other traffic never enters the IPTV
+network. No provider subnets are assumed; the Python server instead adds fixed
+routes to the main table.
 
 The provider answers many concurrent programme-window requests with HTTP 503;
 the Python server drops those windows (on the live service more than half of
@@ -188,11 +199,44 @@ in Rust 1.87 and need a nightly toolchain with `-Zbuild-std`.
 At run time the process needs `CAP_NET_RAW` and `CAP_NET_ADMIN`, `/proc`
 (to check them), and the IPTV interface in its network namespace, e.g.
 `--network host --cap-add NET_RAW --cap-add NET_ADMIN` for a container.
-On OpenWrt, `openwrt/iptv-media-server.init` is a procd service whose `respawn`
-takes the role of `Restart=on-failure`. Install it as
-`/etc/init.d/iptv-media-server` next to `/usr/bin/iptv-media-server` and
-`/etc/iptv.env` (mode 600), then `service iptv-media-server enable && service
-iptv-media-server start`.
+### OpenWrt
+
+`openwrt/luci-app-iptv` is a LuCI application (JavaScript views, no
+`luci-compat`) with a procd service, a UCI config (`/etc/config/iptv`) and
+`Services > IPTV` pages for status, settings and the log. It depends on
+`rpcd-mod-file`. The service runs in one of two modes:
+
+- **Standalone** (`option managed '0'`): one process does everything, exactly
+  as on any other Linux host: it acquires and renews the lease, configures the
+  interface and routing table itself, and serves.
+- **Managed by netifd** (`option managed '1'`): the router's own network stack
+  owns the interface. Add an interface with the `iptv` protocol, for example
+
+  ```
+  config interface 'iptv'
+  	option proto 'iptv'
+  	option device 'eth1'
+  	option ip4table '4788'
+  	option dhcp_user '...'
+  	option dhcp_password '...'
+  ```
+
+  The interface must be named `iptv`: the procd service reads its address and
+  restarts on its events by that name, and `proto iptv` is what gives it the
+  authenticated DHCP.
+
+  netifd then runs `iptv-media-server --lease-daemon`, which acquires and
+  renews the lease and reports it through `/usr/libexec/iptv-lease-report`, the
+  same way `udhcpc` reports through `/lib/netifd/dhcp.script`. The lease shows
+  under `Network > Interfaces`, the routes and rules under `Status > Routing`,
+  and `ip4table` keeps the IPTV routes out of the main table. The media server
+  runs with `--network-managed --lease-address <address>`, never touches the
+  network itself, and is restarted by procd whenever the `iptv` interface
+  changes. netifd's rules also send traffic *to* the IPTV subnet through that
+  table, which the standalone mode does not do.
+
+procd's `respawn` takes the role of systemd's `Restart=on-failure` in both
+modes.
 
 ## Public-release hygiene
 

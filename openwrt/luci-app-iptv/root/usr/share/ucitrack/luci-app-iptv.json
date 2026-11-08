@@ -1,0 +1,5 @@
+{
+	"iptv": {
+		"init": [ "iptv-media-server" ]
+	}
+}

@@ -1,0 +1,29 @@
+#!/bin/sh
+# Reports one DHCP lease to netifd. Run by `iptv-media-server --lease-daemon`
+# with the lease in the environment; mirrors what /lib/netifd/dhcp.script does
+# for udhcpc.
+#
+# IPTV_EVENT is bound, renew or expired; the rest describe the lease.
+
+[ -n "$IPTV_EVENT" ] || exit 1
+
+. /lib/functions.sh
+. /lib/netifd/netifd-proto.sh
+
+case "$IPTV_EVENT" in
+	bound|renew)
+		proto_init_update "$IPTV_DEVICE" 1
+		proto_add_ipv4_address "$IPTV_ADDRESS" "$IPTV_PREFIX"
+		proto_add_ipv4_route 0.0.0.0 0 "$IPTV_GATEWAY"
+		proto_send_update "$INTERFACE"
+		;;
+	expired)
+		# The lease is gone: withdraw the address so netifd reports the
+		# interface as down instead of serving a stale one.
+		proto_init_update "*" 0
+		proto_send_update "$INTERFACE"
+		;;
+	*)
+		exit 1
+		;;
+esac

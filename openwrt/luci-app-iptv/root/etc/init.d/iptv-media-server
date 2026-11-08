@@ -1,0 +1,124 @@
+#!/bin/sh /etc/rc.common
+# procd service for the Rust IPTV media server on OpenWrt.
+#
+# Configuration lives in /etc/config/iptv (the luci-app-iptv interface edits
+# it); credentials are handed to the server through the environment so they
+# never appear on a command line. procd's respawn replaces systemd's
+# Restart=on-failure when a DHCP lease expires or the server hands out a
+# different address.
+
+USE_PROCD=1
+START=95
+STOP=10
+
+# The netifd interface this service follows; managed mode depends on the name.
+NETIFD_INTERFACE=iptv
+
+# Address netifd put on the IPTV interface, as `--lease-address` arguments.
+lease_arguments() {
+	local status address
+	status="$(ifstatus "$NETIFD_INTERFACE" 2>/dev/null)" || return 0
+	address="$(printf '%s' "$status" | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)"
+	[ -n "$address" ] && printf '%s' "--lease-address $address"
+}
+
+start_service() {
+	local enabled interface host port route_table dhcp_user dhcp_password epg_user epg_password
+	local epg_mac stb_id_prefix authentication_url guide_past_days guide_future_days
+	local guide_timezone guide_cache logo_dir refresh_interval_seconds
+
+	config_load iptv
+	config_get_bool enabled main enabled 1
+	[ "$enabled" = "1" ] || return 0
+
+	config_get_bool managed main managed 0
+	config_get interface main interface 'eth1'
+	config_get host main host '0.0.0.0'
+	config_get port main port '8080'
+	config_get route_table main route_table '4788'
+	config_get dhcp_user main dhcp_user ''
+	config_get dhcp_password main dhcp_password ''
+	config_get epg_user main epg_user ''
+	config_get epg_password main epg_password ''
+	config_get epg_mac main epg_mac ''
+	config_get stb_id_prefix main stb_id_prefix ''
+	config_get authentication_url main authentication_url ''
+	config_get guide_past_days main guide_past_days '7'
+	config_get guide_future_days main guide_future_days '2'
+	config_get guide_timezone main guide_timezone 'Asia/Shanghai'
+	config_get guide_cache main guide_cache '/var/lib/iptv/guide.json'
+	config_get logo_dir main logo_dir '/etc/iptv/logos'
+	config_get refresh_interval_seconds main refresh_interval_seconds '3600'
+
+	local network_args
+	if [ "$managed" != "1" ] && { [ -z "$dhcp_user" ] || [ -z "$dhcp_password" ]; }; then
+		logger -t iptv-media-server "DHCP credentials are not set"
+		return 1
+	fi
+	# Checked here rather than left to the server: it would exit at startup and
+	# procd would respawn it forever.
+	if [ -z "$epg_user" ] || [ -z "$epg_password" ]; then
+		logger -t iptv-media-server "EPG credentials are not set"
+		return 1
+	fi
+
+	mkdir -p "$(dirname "$guide_cache")"
+
+	if [ "$managed" = "1" ]; then
+		# netifd owns the interface through `proto iptv`; serve against the
+		# address it configured instead of acquiring our own lease.
+		local lease
+		lease="$(lease_arguments)"
+		if [ -z "$lease" ]; then
+			logger -t iptv-media-server "$NETIFD_INTERFACE interface has no address yet"
+			return 1
+		fi
+		network_args="--network-managed --interface $interface $lease"
+	else
+		network_args="--interface $interface --route-table $route_table"
+	fi
+
+	procd_open_instance
+	# shellcheck disable=SC2086 # network_args is a deliberate argument list.
+	procd_set_param command /usr/bin/iptv-media-server \
+		$network_args \
+		--host "$host" \
+		--port "$port" \
+		--guide-past-days "$guide_past_days" \
+		--guide-future-days "$guide_future_days" \
+		--guide-timezone "$guide_timezone" \
+		--guide-cache "$guide_cache" \
+		--logo-dir "$logo_dir" \
+		--refresh-interval-seconds "$refresh_interval_seconds"
+
+	procd_set_param env \
+		IPTV_DHCP_USER="$dhcp_user" \
+		IPTV_DHCP_PASSWORD="$dhcp_password" \
+		IPTV_USER_ID="$epg_user" \
+		IPTV_PASSWORD="$epg_password"
+
+	[ -n "$epg_mac" ] && procd_append_param env IPTV_EPG_MAC="$epg_mac"
+	[ -n "$stb_id_prefix" ] && procd_append_param env IPTV_STB_ID_PREFIX="$stb_id_prefix"
+	[ -n "$authentication_url" ] && procd_append_param env IPTV_AUTH_URL="$authentication_url"
+
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger iptv
+
+	# In managed mode the server is bound to the address netifd reports, so it
+	# restarts whenever the IPTV interface comes up or changes.
+	local managed
+	config_load iptv
+	config_get_bool managed main managed 0
+	[ "$managed" = "1" ] && procd_add_interface_trigger "interface.*" "$NETIFD_INTERFACE" /etc/init.d/iptv-media-server restart
+}
+
+reload_service() {
+	stop
+	start
+}

@@ -1,11 +1,13 @@
 //! Keeps the DHCP lease alive for the lifetime of the server.
 //!
-//! The provider authenticates every exchange with Option 60, so renewal
-//! repeats the full DISCOVER/REQUEST exchange used at startup instead of a
-//! bare RFC 2131 RENEWING request. The first attempt runs at T1 (half the
-//! lease); failures are retried until the lease expires.
+//! The provider authenticates every exchange with Option 60, so renewal repeats
+//! the exchange carrying a fresh authenticator. It does not repeat DISCOVER: a
+//! fresh DISCOVER can be answered with any free address, which is not a
+//! renewal. Instead the held address goes in `ciaddr` (RFC 2131 RENEWING), so
+//! the server keeps the binding. The first attempt runs at T1 (half the lease);
+//! failures are retried until the lease expires.
 
-use crate::dhcp::{ClientConfig, DhcpError, DhcpLease, acquire_lease, remove_address};
+use crate::dhcp::{ClientConfig, DhcpError, DhcpLease, acquire_lease, remove_address, renew_lease};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::{
@@ -13,8 +15,8 @@ use tokio::{
     time::{Instant, sleep_until},
 };
 
-const MIN_RETRY: Duration = Duration::from_secs(5);
-const MAX_RETRY: Duration = Duration::from_secs(60);
+pub(crate) const MIN_RETRY: Duration = Duration::from_secs(5);
+pub(crate) const MAX_RETRY: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Error)]
 pub enum RenewalError {
@@ -29,6 +31,7 @@ pub struct Renewal {
     pub user: String,
     pub password: String,
     pub stb_id_prefix: String,
+    pub route_table: u32,
 }
 
 impl Renewal {
@@ -46,7 +49,7 @@ impl Renewal {
                 () = sleep_until(attempt_at) => {}
                 _ = shutdown.wait_for(|stop| *stop) => return Ok(()),
             }
-            match self.acquire().await {
+            match self.renew(&lease).await {
                 Ok(renewed) if renewed.address == lease.address => {
                     tracing::info!(lease_seconds = renewed.lease_seconds, "DHCP lease renewed");
                     lease = renewed;
@@ -73,7 +76,7 @@ impl Renewal {
     /// Drops the address of a lease that is no longer ours, best effort: the
     /// restarted service configures the interface again either way.
     fn release(&self, lease: &DhcpLease) {
-        if let Err(error) = remove_address(&self.interface, lease) {
+        if let Err(error) = remove_address(&self.interface, lease, self.route_table) {
             tracing::warn!(%error, "previous DHCP address could not be removed");
         }
     }
@@ -98,6 +101,40 @@ impl Renewal {
             )))
         })
     }
+
+    /// Asks the server to extend `held`. Only a NAK falls back to a full
+    /// acquisition, which is the only recovery once the binding is gone.
+    async fn renew(&self, held: &DhcpLease) -> Result<DhcpLease, DhcpError> {
+        let interface = self.interface.clone();
+        let user = self.user.clone();
+        let password = self.password.clone();
+        let prefix = self.stb_id_prefix.clone();
+        let current = held.clone();
+        let renewed = tokio::task::spawn_blocking(move || {
+            let config = ClientConfig {
+                user: &user,
+                password: &password,
+                stb_id_prefix: &prefix,
+            };
+            renew_lease(&interface, &config, &current)
+        })
+        .await
+        .unwrap_or_else(|error| {
+            Err(DhcpError::Platform(crate::dhcp::LinuxError::Io(
+                error.to_string(),
+            )))
+        });
+        match renewed {
+            // Only a NAK means the binding is gone. A timeout or I/O error is
+            // transient, and a fresh DISCOVER would likely come back with a
+            // different address, which ends the server for no reason.
+            Err(DhcpError::Platform(crate::dhcp::LinuxError::Nak)) => {
+                tracing::warn!("DHCP renewal was refused; acquiring a new lease");
+                self.acquire().await
+            }
+            other => other,
+        }
+    }
 }
 
 /// T1: half of the lease duration before expiry.
@@ -107,7 +144,7 @@ fn renew_at(lease: &DhcpLease) -> Instant {
 
 /// Retries at half the remaining lifetime, bounded so a short lease still
 /// gets several attempts and a long one is not hammered.
-fn retry_delay(remaining: Duration) -> Duration {
+pub(crate) fn retry_delay(remaining: Duration) -> Duration {
     (remaining / 2).clamp(MIN_RETRY, MAX_RETRY).min(remaining)
 }
 
