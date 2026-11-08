@@ -3,43 +3,8 @@
   "extends": [
     "config:recommended",
     ":semanticCommits",
-    ":semanticCommitTypeAll(chore)",
-    "schedule:weekly"
+    ":semanticCommitTypeAll(chore)"
   ],
-  "rangeStrategy": "bump",
-  "lockFileMaintenance": {
-    "enabled": true,
-    "automerge": true
-  },
-  "packageRules": [
-    {
-      "description": "Rust crates: automerge anything that is not a major bump. The gate pins the toolchain and clippy denies warnings, so a bad bump fails CI before it can merge.",
-      "matchManagers": ["cargo"],
-      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
-      "automerge": true
-    },
-    {
-      "description": "Rust major bumps need a human: they can change lint behaviour or the MSRV.",
-      "matchManagers": ["cargo"],
-      "matchUpdateTypes": ["major"],
-      "automerge": false
-    },
-    {
-      "description": "Workflow actions are exercised by every PR, so even a major is safe to automerge.",
-      "matchManagers": ["github-actions"],
-      "automerge": true
-    },
-    {
-      "description": "The Rust toolchain is pinned deliberately in rust-toolchain.toml; never move it automatically.",
-      "matchManagers": ["rust-toolchain"],
-      "enabled": false
-    }
-  ],
-  "vulnerabilityAlerts": {
-    "enabled": true,
-    "automerge": true
-  },
-  "osvVulnerabilityAlerts": true,
-  "prConcurrentLimit": 5,
-  "rebaseWhen": "conflicted"
+  "automerge": true,
+  "platformAutomerge": true
 }

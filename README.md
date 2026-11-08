@@ -221,6 +221,11 @@ Four workflows, each scoped to what it checks:
 | `ci-luci.yml` | changes to the LuCI views | JSON validity, view syntax, menu/ACL coverage |
 | `release.yml` | a `v*` tag | three static binaries plus `.ipk`/`.apk` per architecture, uploaded to the release |
 
+`renovate.json` automerges every update, major bumps and the toolchain included:
+CI has to pass first, and a bump that breaks the build or a lint simply never
+merges. Renovate's own PR needs the [Renovate app](https://github.com/apps/renovate)
+installed on the repository for any of this to run.
+
 ## Public-release hygiene
 
 The repository ignores local captures, device dumps, APKs, native libraries,
