@@ -71,6 +71,7 @@ pub fn build_discover(
         source,
         xid,
         None,
+        Ipv4Addr::BROADCAST,
         &[
             (53, &[1]),
             (60, option60),
@@ -93,6 +94,7 @@ pub fn build_request(
         source,
         xid,
         None,
+        Ipv4Addr::BROADCAST,
         &[
             (53, &[3]),
             (50, &requested),
@@ -110,6 +112,7 @@ pub fn build_renew(
     source: MacAddress,
     xid: u32,
     held: Ipv4Addr,
+    server: Ipv4Addr,
     option60: &[u8],
     hostname: &[u8],
 ) -> Result<Vec<u8>, PacketError> {
@@ -117,6 +120,7 @@ pub fn build_renew(
         source,
         xid,
         Some(held),
+        server,
         &[
             (53, &[3]),
             (60, option60),
@@ -131,6 +135,7 @@ fn build(
     source: MacAddress,
     xid: u32,
     ciaddr: Option<Ipv4Addr>,
+    destination: Ipv4Addr,
     fields: &[(u8, &[u8])],
 ) -> Result<Vec<u8>, PacketError> {
     let mut payload = vec![0; DHCP];
@@ -147,20 +152,23 @@ fn build(
         payload.extend_from_slice(value);
     }
     payload.push(255);
-    frame(source, ciaddr, &payload, 68, 67)
+    frame(source, ciaddr, destination, &payload, 68, 67)
 }
 
-/// Wraps a UDP payload in IPv4 and Ethernet. The source address is the client's
-/// own address while renewing and the unspecified address otherwise; both go to
-/// the broadcast address, which the server answers either way.
+/// Wraps a UDP payload in IPv4 and Ethernet. Renewal addresses the server that
+/// granted the lease, as the set-top box does and as RFC 2131 §4.1 prescribes;
+/// everything else is broadcast. Ethernet stays broadcast either way, because
+/// the server's MAC is unknown.
 fn frame(
     source: MacAddress,
     source_ip: Option<Ipv4Addr>,
+    destination_ip: Ipv4Addr,
     payload: &[u8],
     source_port: u16,
     destination_port: u16,
 ) -> Result<Vec<u8>, PacketError> {
     let source_ip = source_ip.unwrap_or(Ipv4Addr::UNSPECIFIED).octets();
+    let destination_ip = destination_ip.octets();
     let udp_len = u16::try_from(UDP + payload.len()).map_err(|_| PacketError::TooLarge)?;
     let ip_len = udp_len + 20;
     let mut out = Vec::with_capacity(ETH + usize::from(ip_len));
@@ -172,7 +180,7 @@ fn frame(
     out.extend_from_slice(&ip_len.to_be_bytes());
     out.extend_from_slice(&[0, 1, 0, 0, 64, 17, 0, 0]);
     out.extend_from_slice(&source_ip);
-    out.extend_from_slice(&[255, 255, 255, 255]);
+    out.extend_from_slice(&destination_ip);
     let ip_checksum = checksum(&out[ip..]);
     out[ip + 10..ip + 12].copy_from_slice(&ip_checksum.to_be_bytes());
     let udp = out.len();
@@ -182,7 +190,8 @@ fn frame(
     out.extend_from_slice(&[0, 0]);
     out.extend_from_slice(payload);
     let mut pseudo = source_ip.to_vec();
-    pseudo.extend_from_slice(&[255, 255, 255, 255, 0, 17]);
+    pseudo.extend_from_slice(&destination_ip);
+    pseudo.extend_from_slice(&[0, 17]);
     pseudo.extend_from_slice(&udp_len.to_be_bytes());
     pseudo.extend_from_slice(&out[udp..]);
     out[udp + 6..udp + 8].copy_from_slice(&checksum(&pseudo).to_be_bytes());
@@ -333,16 +342,27 @@ mod tests {
             payload.extend_from_slice(value);
         }
         payload.push(255);
-        frame(MAC, None, &payload, 67, 68).unwrap_or_default()
+        frame(MAC, None, Ipv4Addr::BROADCAST, &payload, 67, 68).unwrap_or_default()
     }
 
     #[test]
     fn renewal_carries_the_held_address_and_no_requesting_server_options() {
-        let renewal =
-            build_renew(MAC, 9, Ipv4Addr::new(192, 0, 2, 44), &[0xaa], b"STB").unwrap_or_default();
+        let renewal = build_renew(
+            MAC,
+            9,
+            Ipv4Addr::new(192, 0, 2, 44),
+            Ipv4Addr::new(192, 0, 2, 1),
+            &[0xaa],
+            b"STB",
+        )
+        .unwrap_or_default();
         // ciaddr, not option 50, is what asks the server to extend this binding.
         let ciaddr = ETH + 20 + UDP + 12;
         assert_eq!(&renewal[ciaddr..ciaddr + 4], &[192, 0, 2, 44]);
+        // Addressed to the server that granted the lease, as the set-top box
+        // does, so no other server on the segment can answer the renewal.
+        let destination = ETH + 16;
+        assert_eq!(&renewal[destination..destination + 4], &[192, 0, 2, 1]);
         assert_eq!(
             option_bytes(&renewal),
             &[

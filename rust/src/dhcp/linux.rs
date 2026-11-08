@@ -108,6 +108,7 @@ pub fn renew_lease(
         mac,
         xid,
         held.address,
+        held.server,
         &option60(config)?,
         hostname.as_bytes(),
     )?;

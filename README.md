@@ -114,11 +114,15 @@ lose their `#fragment` before they are proxied.
 
 Unlike the Python server, the Rust server also renews its DHCP lease. At half
 the lease time it sends a renewal REQUEST carrying the address it holds
-(`ciaddr`) and a fresh authenticator, so the provider extends that binding
-instead of handing out whatever a fresh DISCOVER would offer; measured on the
-live network, a DISCOVER at T1 was answered with a different address while the
-renewal REQUEST kept the original one. A refused renewal falls back to a full
-DISCOVER/REQUEST exchange, retried until expiry. If the lease expires or the
+(`ciaddr`), a fresh authenticator, and the server that granted the lease as its
+destination, so the provider extends that binding instead of handing out
+whatever a fresh DISCOVER would offer. Measured on the live network: a DISCOVER
+at T1 was answered with a different address, while the renewal REQUEST kept the
+original one. A captured set-top box renews the same way — `ciaddr` set, no
+option 50 or 54, request addressed to the server — except that it also unicasts
+at layer two, which needs the server's MAC; the frame stays broadcast there.
+A refused renewal falls back to a full DISCOVER/REQUEST exchange, retried until
+expiry. If the lease expires or the
 provider assigns a different address, the process exits with status 1 so a
 supervisor such as the systemd unit below restarts it on the new lease.
 
