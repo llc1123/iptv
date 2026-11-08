@@ -44,7 +44,7 @@ from iptv_client.service import IptvService, _day_ranges
 from iptv_client.xmltv import render_m3u, render_xmltv
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURES = ROOT / "rust/tests/fixtures"
+FIXTURES = ROOT / "tests/fixtures"
 
 
 def json_text(value: Any) -> bytes:
