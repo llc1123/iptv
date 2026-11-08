@@ -217,6 +217,10 @@ At run time the process needs `CAP_NET_RAW` and `CAP_NET_ADMIN`, `/proc`
   	option dhcp_password '...'
   ```
 
+  The interface must be named `iptv`: the procd service reads its address and
+  restarts on its events by that name, and `proto iptv` is what gives it the
+  authenticated DHCP.
+
   netifd then runs `iptv-media-server --lease-daemon`, which acquires and
   renews the lease and reports it through `/usr/libexec/iptv-lease-report`, the
   same way `udhcpc` reports through `/lib/netifd/dhcp.script`. The lease shows

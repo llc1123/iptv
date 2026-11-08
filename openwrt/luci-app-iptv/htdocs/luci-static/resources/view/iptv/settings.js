@@ -19,7 +19,7 @@ return view.extend({
 		o.rmempty = false;
 
 		o = s.option(form.Flag, 'managed', _('Managed by netifd'),
-			_('Take the address from an IPTV interface configured with the iptv protocol instead of acquiring a lease here. Use this on a router whose interfaces are managed by netifd.'));
+			_('Take the address from a network interface using the iptv protocol instead of acquiring a lease here. That interface must be named iptv, because the service reads its address and reacts to its events by name.'));
 		o.default = '0';
 		o.rmempty = false;
 
@@ -41,6 +41,16 @@ return view.extend({
 		o = s.option(form.Value, 'route_table', _('Routing table'),
 			_('Table that carries the IPTV subnet, a default route and the matching rule. Must stay below the main table (32766). Ignored when netifd manages the interface, where `option ip4table` on the IPTV interface decides.'));
 		o.datatype = 'range(1,32765)';
+		o.validate = function(section_id, value) {
+			var n = Number(value);
+
+			// The server's parser rejects these too; failing here keeps procd
+			// from respawning a server that cannot start.
+			if (n >= 253 && n <= 255)
+				return _('Tables 253-255 are reserved by the kernel.');
+
+			return true;
+		};
 		o.default = '4788';
 		o.rmempty = false;
 

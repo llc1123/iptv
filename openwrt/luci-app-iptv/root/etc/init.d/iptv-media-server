@@ -11,10 +11,13 @@ USE_PROCD=1
 START=95
 STOP=10
 
+# The netifd interface this service follows; managed mode depends on the name.
+NETIFD_INTERFACE=iptv
+
 # Address netifd put on the IPTV interface, as `--lease-address` arguments.
 lease_arguments() {
 	local status address
-	status="$(ifstatus iptv 2>/dev/null)" || return 0
+	status="$(ifstatus "$NETIFD_INTERFACE" 2>/dev/null)" || return 0
 	address="$(printf '%s' "$status" | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)"
 	[ -n "$address" ] && printf '%s' "--lease-address $address"
 }
@@ -56,7 +59,7 @@ start_service() {
 		local lease
 		lease="$(lease_arguments)"
 		if [ -z "$lease" ]; then
-			logger -t iptv-media-server "iptv interface has no address yet"
+			logger -t iptv-media-server "$NETIFD_INTERFACE interface has no address yet"
 			return 1
 		fi
 		network_args="--network-managed --interface $interface $lease"
@@ -101,7 +104,7 @@ service_triggers() {
 	local managed
 	config_load iptv
 	config_get_bool managed main managed 0
-	[ "$managed" = "1" ] && procd_add_interface_trigger "interface.*" iptv /etc/init.d/iptv-media-server restart
+	[ "$managed" = "1" ] && procd_add_interface_trigger "interface.*" "$NETIFD_INTERFACE" /etc/init.d/iptv-media-server restart
 }
 
 reload_service() {
