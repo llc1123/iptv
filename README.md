@@ -85,6 +85,115 @@ sudo -E uv run iptv-logo-catalog \
   --output var/logo-catalog/catalog.json
 ```
 
+The provider's channel data carries no logos (`ChannelLogURL` is always
+empty); the builder matches channels through a third-party EPG matching
+service and downloads the logos it points to.
+
+## Rust media server
+
+`rust/` contains a Rust rewrite of the media server with the same endpoints as
+the Python server, and the same flags for the shared options (`--interface`,
+`--epg-mac`, `--stb-id`, `--user-id`, `--password`, `--authentication-url`,
+`--host`, `--port`, `--guide-past-days`, `--guide-future-days`,
+`--guide-timezone`, `--guide-cache`). It has no `--logo-catalog` or
+`--metadata-converter-url`: logos come from `--logo-dir` (see below) and there
+is no catalog builder. `--stb-id-prefix` and `--refresh-interval-seconds`
+exist only in the Rust server.
+
+Both servers read `IPTV_EPG_MAC`, `IPTV_DHCP_USER`, `IPTV_DHCP_PASSWORD`,
+`IPTV_USER_ID`, `IPTV_PASSWORD` and `IPTV_AUTH_URL`. The Rust server also reads
+`IPTV_INTERFACE` and `IPTV_STB_ID_PREFIX`; Python ignores both, so it uses
+`eth0` unless `--interface` is given. Pass `--interface` explicitly to either
+server when the interface is not `eth0` and not in the environment. The
+systemd unit below relies on `IPTV_INTERFACE` and passes no `--interface`.
+
+The Python implementation remains the reference: deterministic fixtures generated from it by
+`tools/oracle/generate.py` live in `rust/tests/fixtures/` and pin the Rust
+output byte for byte. The only intended difference is that HLS resource URLs
+lose their `#fragment` before they are proxied.
+
+Unlike the Python server, the Rust server also renews its DHCP lease: it
+repeats the authenticated DHCP exchange at half the lease time and retries
+until expiry. If the lease expires or the server hands out a different
+address, the process exits with status 1 so a supervisor such as the systemd
+unit below restarts it on the new lease.
+
+The Rust server keeps the IPTV network out of the host's routing. The leased
+address is added without a prefix route, and its subnet and a default route
+via the lease's router go into routing table 4788, which only traffic from
+the leased address reaches (`ip rule` priority 4788, ahead of `main`). The EPG
+and HLS clients bind to that address and the interface, so they reach the
+provider whatever the host's own routes or overlapping subnets are, and the
+host's other traffic never enters the IPTV network. No provider subnets are
+assumed; the Python server instead adds fixed routes to the main table.
+
+The provider answers many concurrent programme-window requests with HTTP 503;
+the Python server drops those windows (on the live service more than half of
+the guide). The Rust server retries them with backoff and lower concurrency
+before keeping the previous snapshot's programmes for any window that still
+fails.
+
+Prepare the host once, then run the offline gate:
+
+```bash
+rustup toolchain install 1.87.0 --profile minimal --component rustfmt --component clippy
+rustup run 1.87.0 cargo fetch --manifest-path rust/Cargo.toml --locked
+uv sync
+bash scripts/verify.sh
+```
+
+`verify.sh` runs rustfmt, clippy with warnings denied, the test suite
+(in-process loopback mock provider only), the fixture generator in `--check`
+mode, and a release build.
+
+The live gate starts the release binary against the real provider. It needs
+the Python server stopped and a mode-600 `var/iptv-e2e.env` holding the
+`IPTV_*` variables listed above:
+
+```bash
+IPTV_ENABLE_REAL_E2E=1 bash scripts/test-real-e2e.sh
+```
+
+The Rust server does not use `catalog.json`. A channel's logo is
+`<logo-dir>/<channel-id>.png` (`--logo-dir`, default `var/logo-catalog/logos`),
+maintained by the operator; channels with such a file get a `tvg-logo`/`icon`
+pointing at `/logos/<channel-id>`, others get none. Files are checked on each
+feed render, so logos added later appear after the next metadata refresh.
+
+`systemd/iptv-media-server.service` is a unit template that reads the same
+variables from `/opt/iptv/var/iptv.env` and grants only `CAP_NET_RAW` and
+`CAP_NET_ADMIN`, which DHCP needs.
+
+### Static builds (containers, OpenWrt)
+
+The server is a single self-contained binary: it configures the interface over
+rtnetlink instead of calling `ip`, contains no C code and no `unsafe`, and
+speaks plain HTTP only (the provider's endpoints are all `http://`). A static
+musl build therefore runs in a `FROM scratch`/distroless image or on OpenWrt
+with nothing else installed:
+
+```bash
+rustup target add --toolchain 1.87.0 x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+rustup run 1.87.0 cargo build --manifest-path rust/Cargo.toml --release \
+  --target x86_64-unknown-linux-musl
+# Cross targets link with the bundled LLD; no C cross toolchain is needed.
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld \
+  rustup run 1.87.0 cargo build --manifest-path rust/Cargo.toml --release \
+  --target aarch64-unknown-linux-musl
+```
+
+`armv7-unknown-linux-musleabihf` builds the same way. MIPS targets are tier 3
+in Rust 1.87 and need a nightly toolchain with `-Zbuild-std`.
+
+At run time the process needs `CAP_NET_RAW` and `CAP_NET_ADMIN`, `/proc`
+(to check them), and the IPTV interface in its network namespace, e.g.
+`--network host --cap-add NET_RAW --cap-add NET_ADMIN` for a container.
+On OpenWrt, `openwrt/iptv-media-server.init` is a procd service whose `respawn`
+takes the role of `Restart=on-failure`. Install it as
+`/etc/init.d/iptv-media-server` next to `/usr/bin/iptv-media-server` and
+`/etc/iptv.env` (mode 600), then `service iptv-media-server enable && service
+iptv-media-server start`.
+
 ## Public-release hygiene
 
 The repository ignores local captures, device dumps, APKs, native libraries,
