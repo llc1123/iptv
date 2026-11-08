@@ -112,11 +112,15 @@ The Python implementation remains the reference: deterministic fixtures generate
 output byte for byte. The only intended difference is that HLS resource URLs
 lose their `#fragment` before they are proxied.
 
-Unlike the Python server, the Rust server also renews its DHCP lease: it
-repeats the authenticated DHCP exchange at half the lease time and retries
-until expiry. If the lease expires or the server hands out a different
-address, the process exits with status 1 so a supervisor such as the systemd
-unit below restarts it on the new lease.
+Unlike the Python server, the Rust server also renews its DHCP lease. At half
+the lease time it sends a renewal REQUEST carrying the address it holds
+(`ciaddr`) and a fresh authenticator, so the provider extends that binding
+instead of handing out whatever a fresh DISCOVER would offer; measured on the
+live network, a DISCOVER at T1 was answered with a different address while the
+renewal REQUEST kept the original one. A refused renewal falls back to a full
+DISCOVER/REQUEST exchange, retried until expiry. If the lease expires or the
+provider assigns a different address, the process exits with status 1 so a
+supervisor such as the systemd unit below restarts it on the new lease.
 
 The Rust server keeps the IPTV network out of the host's routing. The leased
 address is added without a prefix route, and its subnet and a default route
