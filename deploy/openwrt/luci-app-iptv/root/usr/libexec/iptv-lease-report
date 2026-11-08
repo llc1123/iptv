@@ -11,7 +11,7 @@
 . /lib/netifd/netifd-proto.sh
 
 case "$IPTV_EVENT" in
-	bound|renew)
+	bound | renew)
 		proto_init_update "$IPTV_DEVICE" 1
 		proto_add_ipv4_address "$IPTV_ADDRESS" "$IPTV_PREFIX"
 		proto_add_ipv4_route 0.0.0.0 0 "$IPTV_GATEWAY"

@@ -5,19 +5,28 @@
 # passed to the server, e.g. `--guide-cache /tmp/guide.json`.
 set -Eeuo pipefail
 
-if [[ "${IPTV_ENABLE_REAL_E2E:-}" != 1 ]]; then
+if [[ ${IPTV_ENABLE_REAL_E2E:-} != 1 ]]; then
     printf 'SKIP: set IPTV_ENABLE_REAL_E2E=1 to run the real E2E gate\n'
     exit 0
 fi
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 ENV_FILE=$ROOT/var/iptv-e2e.env
-SERVER=$ROOT/rust/target/release/iptv-media-server
+SERVER=$ROOT/target/release/iptv-media-server
 PORT=${IPTV_E2E_PORT:-8080}
 
-[[ -x "$SERVER" ]] || { printf 'REFUSE: build %s first\n' "${SERVER#"$ROOT"/}" >&2; exit 2; }
-[[ -f "$ENV_FILE" ]] || { printf 'REFUSE: var/iptv-e2e.env is missing\n' >&2; exit 2; }
-[[ $(stat -c '%a' "$ENV_FILE") == 600 ]] || { printf 'REFUSE: var/iptv-e2e.env must be mode 600\n' >&2; exit 2; }
+[[ -x $SERVER ]] || {
+    printf 'REFUSE: build %s first\n' "${SERVER#"$ROOT"/}" >&2
+    exit 2
+}
+[[ -f $ENV_FILE ]] || {
+    printf 'REFUSE: var/iptv-e2e.env is missing\n' >&2
+    exit 2
+}
+[[ $(stat -c '%a' "$ENV_FILE") == 600 ]] || {
+    printf 'REFUSE: var/iptv-e2e.env must be mode 600\n' >&2
+    exit 2
+}
 # Another server answering here would make the probes pass without this binary.
 if (exec 3<>"/dev/tcp/127.0.0.1/$PORT" && exec 3<&-) 2>/dev/null; then
     printf 'REFUSE: something already listens on port %s\n' "$PORT" >&2
@@ -30,7 +39,7 @@ cd -- "$ROOT"
 LOG=$(mktemp)
 SERVER_PID=''
 cleanup() {
-    if [[ -n "$SERVER_PID" ]]; then
+    if [[ -n $SERVER_PID ]]; then
         kill -TERM "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
     fi

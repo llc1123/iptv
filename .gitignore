@@ -1,10 +1,5 @@
-# Python and local tooling.
-.venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.ruff_cache/
-.ty/
+# Node tooling.
+/node_modules/
 
 # Runtime output and generated release artifacts.
 /var/
@@ -28,5 +23,8 @@ __pycache__/
 *.idsig
 
 # Rust build artifacts and local verification output.
-/rust/target/
+/target/
 /.omo/
+
+# Node tooling for the release workflow scripts.
+/node_modules/
