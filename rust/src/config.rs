@@ -77,6 +77,14 @@ pub struct Config {
     pub logo_dir: PathBuf,
     #[arg(long, default_value_t = 3600, value_parser = clap::value_parser!(u64).range(1..))]
     pub refresh_interval_seconds: u64,
+    /// Routing table and rule priority that carry the IPTV network; it must
+    /// stay ahead of the main table's priority of 32766.
+    #[arg(
+        long,
+        default_value_t = crate::dhcp::DEFAULT_ROUTE_TABLE,
+        value_parser = clap::value_parser!(u32).range(1..=32765)
+    )]
+    pub route_table: u32,
 }
 
 impl Config {

@@ -94,20 +94,22 @@ pub fn acquire_lease(
     Ok((lease::from_ack(ack, acquired_at)?, mac))
 }
 
-/// Policy routing table for traffic sourced from the lease address. Only
-/// that traffic reaches it, so the IPTV network never mixes with the host's
-/// routes, even when their subnets overlap. ("IPTV" on a phone keypad.)
-pub const ROUTE_TABLE: u32 = 4788;
-/// Priority of the `from <lease address> lookup ROUTE_TABLE` rule; it must
-/// come before the main table (32766).
-pub const RULE_PRIORITY: u32 = 4788;
+/// Default policy routing table for traffic sourced from the lease address.
+/// Only that traffic reaches it, so the IPTV network never mixes with the
+/// host's routes, even when their subnets overlap. ("IPTV" on a keypad.)
+pub const DEFAULT_ROUTE_TABLE: u32 = 4788;
 
 /// Puts the lease on `interface` without touching the main routing table:
 /// the address is added without its prefix route, and the subnet plus a
-/// default route via the lease's router go into [`ROUTE_TABLE`], selected by
-/// a rule for the lease address. Sockets bound to that address (the EPG and
-/// HLS clients) use the IPTV network; nothing else does.
-pub fn configure_interface(interface: &str, lease: &DhcpLease) -> Result<(), DhcpError> {
+/// default route via the lease's router go into `route_table`, selected by a
+/// rule of the same number for the lease address (which keeps it ahead of
+/// `main`). Sockets bound to that address (the EPG and HLS clients) use the
+/// IPTV network; nothing else does.
+pub fn configure_interface(
+    interface: &str,
+    lease: &DhcpLease,
+    route_table: u32,
+) -> Result<(), DhcpError> {
     let index = find_interface(interface)?.index;
     let mut netlink = Netlink::open()?;
     let address = format!("{}/{}", lease.address, lease.prefix_length());
@@ -124,19 +126,26 @@ pub fn configure_interface(interface: &str, lease: &DhcpLease) -> Result<(), Dhc
         (subnet, lease.prefix_length(), None),
         (Ipv4Addr::UNSPECIFIED, 0, Some(lease.router)),
     ] {
-        let route = route_message(index, lease.address, destination, prefix, gateway);
+        let route = route_message(
+            index,
+            lease.address,
+            destination,
+            prefix,
+            gateway,
+            route_table,
+        );
         netlink
             .request(RTM_NEWROUTE, NLM_F_REPLACE, &route)
             .map_err(|error| {
                 LinuxError::Netlink(format!("route {destination}/{prefix}: {error}"))
             })?;
     }
-    remove_rules(&mut netlink)?;
+    remove_rules(&mut netlink, route_table)?;
     netlink
         .request(
             RTM_NEWRULE,
             NLM_F_CREATE,
-            &rule_message(Some(lease.address)),
+            &rule_message(Some(lease.address), route_table),
         )
         .map_err(|error| LinuxError::Netlink(format!("rule from {}: {error}", lease.address)))?;
     Ok(())
@@ -145,21 +154,25 @@ pub fn configure_interface(interface: &str, lease: &DhcpLease) -> Result<(), Dhc
 /// Removes a lease's address, its routes (the kernel drops routes whose
 /// source it was) and the routing rule, e.g. after the server handed out a
 /// different address on renewal.
-pub fn remove_address(interface: &str, lease: &DhcpLease) -> Result<(), DhcpError> {
+pub fn remove_address(
+    interface: &str,
+    lease: &DhcpLease,
+    route_table: u32,
+) -> Result<(), DhcpError> {
     let index = find_interface(interface)?.index;
     let mut netlink = Netlink::open()?;
-    remove_rules(&mut netlink)?;
+    remove_rules(&mut netlink, route_table)?;
     netlink
         .request(RTM_DELADDR, 0, &address_message(index, lease, false))
         .map_err(|error| LinuxError::Netlink(format!("delete {}: {error}", lease.address)))?;
     Ok(())
 }
 
-/// Deletes every rule at [`RULE_PRIORITY`] for [`ROUTE_TABLE`], including
-/// ones left by an earlier run, so restarts do not stack duplicates.
-fn remove_rules(netlink: &mut Netlink) -> Result<(), LinuxError> {
+/// Deletes every rule of `route_table`, including ones left by an earlier
+/// run, so restarts do not stack duplicates.
+fn remove_rules(netlink: &mut Netlink, route_table: u32) -> Result<(), LinuxError> {
     loop {
-        match netlink.request(RTM_DELRULE, 0, &rule_message(None)) {
+        match netlink.request(RTM_DELRULE, 0, &rule_message(None, route_table)) {
             Ok(()) => {}
             Err(error) if error.raw_os_error() == Some(ENOENT) => return Ok(()),
             Err(error) => return Err(LinuxError::Netlink(format!("delete rule: {error}"))),
@@ -225,7 +238,7 @@ fn address_message(index: u32, lease: &DhcpLease, no_prefix_route: bool) -> Vec<
     message
 }
 
-/// `struct rtmsg` and its attributes for a unicast route in [`ROUTE_TABLE`];
+/// `struct rtmsg` and its attributes for a unicast route in `route_table`;
 /// a route without a gateway is directly connected, as `ip` infers.
 fn route_message(
     index: u32,
@@ -233,6 +246,7 @@ fn route_message(
     destination: Ipv4Addr,
     prefix: u32,
     gateway: Option<Ipv4Addr>,
+    route_table: u32,
 ) -> Vec<u8> {
     let scope = if gateway.is_some() {
         RT_SCOPE_UNIVERSE
@@ -243,7 +257,7 @@ fn route_message(
     let prefix = u8::try_from(prefix).unwrap_or(32);
     let mut message = vec![AF_INET, prefix, 0, 0, 0, RTPROT_BOOT, scope, RTN_UNICAST];
     message.extend_from_slice(&0_u32.to_ne_bytes());
-    attribute(&mut message, RTA_TABLE, ROUTE_TABLE.to_ne_bytes());
+    attribute(&mut message, RTA_TABLE, route_table.to_ne_bytes());
     if prefix > 0 {
         attribute(&mut message, RTA_DST, destination.octets());
     }
@@ -255,17 +269,17 @@ fn route_message(
     message
 }
 
-/// `struct fib_rule_hdr` and its attributes for the [`ROUTE_TABLE`] rule;
-/// without a source it selects every such rule (for deletion).
-fn rule_message(source: Option<Ipv4Addr>) -> Vec<u8> {
+/// `struct fib_rule_hdr` and its attributes for a `route_table` rule; without
+/// a source it selects every such rule (for deletion).
+fn rule_message(source: Option<Ipv4Addr>, route_table: u32) -> Vec<u8> {
     let source_len = if source.is_some() { 32 } else { 0 };
     let mut message = vec![AF_INET, 0, source_len, 0, 0, 0, 0, FR_ACT_TO_TBL];
     message.extend_from_slice(&0_u32.to_ne_bytes());
     if let Some(source) = source {
         attribute(&mut message, FRA_SRC, source.octets());
     }
-    attribute(&mut message, FRA_PRIORITY, RULE_PRIORITY.to_ne_bytes());
-    attribute(&mut message, FRA_TABLE, ROUTE_TABLE.to_ne_bytes());
+    attribute(&mut message, FRA_PRIORITY, route_table.to_ne_bytes());
+    attribute(&mut message, FRA_TABLE, route_table.to_ne_bytes());
     message
 }
 

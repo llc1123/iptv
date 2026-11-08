@@ -101,7 +101,9 @@ async fn start(
         user: dhcp_user.clone(),
         password: dhcp_password.clone(),
         stb_id_prefix: prefix.clone(),
+        route_table: config.route_table,
     };
+    let route_table = config.route_table;
     let (lease, interface_mac) = tokio::task::spawn_blocking(move || {
         let client_config = ClientConfig {
             user: &dhcp_user,
@@ -109,7 +111,7 @@ async fn start(
             stb_id_prefix: &prefix,
         };
         let (lease, mac) = acquire_lease(&interface, &client_config)?;
-        configure_interface(&interface, &lease)?;
+        configure_interface(&interface, &lease, route_table)?;
         Ok::<_, crate::dhcp::DhcpError>((lease, mac))
     })
     .await??;

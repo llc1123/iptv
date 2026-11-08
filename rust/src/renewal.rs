@@ -29,6 +29,7 @@ pub struct Renewal {
     pub user: String,
     pub password: String,
     pub stb_id_prefix: String,
+    pub route_table: u32,
 }
 
 impl Renewal {
@@ -73,7 +74,7 @@ impl Renewal {
     /// Drops the address of a lease that is no longer ours, best effort: the
     /// restarted service configures the interface again either way.
     fn release(&self, lease: &DhcpLease) {
-        if let Err(error) = remove_address(&self.interface, lease) {
+        if let Err(error) = remove_address(&self.interface, lease, self.route_table) {
             tracing::warn!(%error, "previous DHCP address could not be removed");
         }
     }
