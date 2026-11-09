@@ -32,12 +32,10 @@ Dropping `--target` builds against the host's libc instead, which is fine for
 local use but is not the self-contained binary the release ships and cannot run
 in a `scratch` image or on OpenWrt.
 
-The OpenWrt packages carry OpenWrt's own architecture names, which are narrower
-than the Rust target names: `x86_64`, `aarch64_cortex-a53` and
-`arm_cortex-a7_neon-vfpv4`. A router whose `opkg`/`apk` reports another
-architecture refuses to install them even if the CPU would run the binary, so
-build for that target with `scripts/make-openwrt-package.sh --arch <its arch>`
-after `rustup target add` for the matching Rust triple.
+The packages carry OpenWrt's architecture names, not Rust's: `x86_64`,
+`aarch64_cortex-a53` and `arm_cortex-a7_neon-vfpv4`. A router reporting any
+other architecture refuses them, so build locally with
+`scripts/make-openwrt-package.sh --arch <the router's>`.
 
 ## Configure credentials and deployment values
 
@@ -85,7 +83,7 @@ there before the unit can start it:
 sudo install -d /opt/iptv/target/release /opt/iptv/var
 sudo install -m 0755 target/x86_64-unknown-linux-musl/release/iptv-media-server \
     /opt/iptv/target/release/iptv-media-server
-sudo install -m 0600 var/iptv-e2e.env /opt/iptv/var/iptv.env   # or write it directly
+sudo install -m 0600 /dev/null /opt/iptv/var/iptv.env   # then fill in the IPTV_* values
 sudo install -m 0644 deploy/systemd/iptv-media-server.service /etc/systemd/system/
 ```
 
@@ -176,27 +174,9 @@ set -a; . var/iptv-e2e.env; set +a
 cargo test --test renewal_live -- --ignored
 ```
 
-That test performs a real DHCP exchange, so the test process needs
-`CAP_NET_RAW` and `CAP_NET_ADMIN` just as the server does, and the credentials
-have to survive into it. Running the shell as root covers both; otherwise grant
-the capabilities to the test binary, which is built per target and therefore
-needs the grant after each rebuild:
-
-```bash
-sudo setcap cap_net_raw,cap_net_admin+ep \
-    "$(find target/release/deps -maxdepth 1 -name 'renewal_live-*' -type f ! -name '*.d' | head -1)"
-```
-
-Build with `--release` first so the binary exists, and re-run `setcap` whenever
-it is rebuilt. A plain `sudo cargo test` will not work: sudo resets `PATH`, so a
-toolchain installed under your home directory disappears. Preserve both:
-
-```bash
-sudo -E env "PATH=$PATH" cargo test --release --test renewal_live -- --ignored
-```
-
-`-E` keeps the exported `IPTV_*` variables, which is why the `set -a` line above
-matters.
+It performs a real DHCP exchange, so it needs `CAP_NET_RAW` and `CAP_NET_ADMIN`
+like the server above; run it as root, or `setcap` the test binary after each
+rebuild.
 
 ### Golden fixtures are frozen
 
@@ -291,10 +271,8 @@ Renovate's own PR needs the [Renovate app](https://github.com/apps/renovate)
 installed for any of this to run.
 
 `platformAutomerge` alone does not make CI a precondition: GitHub merges as soon
-as the branch protection rules allow. Require the `ci-rust`, `ci-scripts` and
-`ci-luci` checks in the `main` branch protection rule, and the guarantee holds —
-a bump that breaks the build, clippy or the fixture check cannot merge. Without
-those required checks it can.
+as branch protection allows, so require the `ci-rust`, `ci-scripts` and
+`ci-luci` checks on `main` or a broken bump can merge before its checks finish.
 
 ## Public-release hygiene
 
