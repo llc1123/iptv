@@ -8,12 +8,8 @@ on:
       - 'deploy/openwrt/luci-app-iptv/root/usr/share/luci/menu.d/**'
       - 'deploy/openwrt/luci-app-iptv/root/usr/share/rpcd/acl.d/**'
       - 'scripts/check-luci.mjs'
+  # No path filter, for the reason given in ci-rust.yml.
   pull_request:
-    paths:
-      - 'deploy/openwrt/luci-app-iptv/htdocs/**'
-      - 'deploy/openwrt/luci-app-iptv/root/usr/share/luci/menu.d/**'
-      - 'deploy/openwrt/luci-app-iptv/root/usr/share/rpcd/acl.d/**'
-      - 'scripts/check-luci.mjs'
   workflow_dispatch:
 
 permissions:

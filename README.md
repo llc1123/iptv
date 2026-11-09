@@ -34,13 +34,22 @@ in a `scratch` image or on OpenWrt.
 
 The packages carry OpenWrt's architecture names, not Rust's: `x86_64`,
 `aarch64_cortex-a53` and `arm_cortex-a7_neon-vfpv4`. A router reporting any
-other architecture refuses them, so build locally with
-`scripts/make-openwrt-package.sh --arch <the router's>`.
+other architecture refuses them, so build the package for it. The script
+packages a binary you pass in; it does not build one, so point `--binary` at a
+build for the router's CPU (`aarch64` for `aarch64_cortex-a53`, `armv7` for
+`arm_cortex-a7_neon-vfpv4`):
+
+```bash
+scripts/make-openwrt-package.sh --binary target/aarch64-unknown-linux-musl/release/iptv-media-server \
+    --arch aarch64_cortex-a53 --version 1.0.0 --output-dir dist
+```
 
 ## Configure credentials and deployment values
 
 Set these environment variables (or the matching flags, listed by
 `--help`). The values below are placeholders.
+
+For a shell, export them:
 
 ```bash
 export IPTV_DHCP_USER='your-dhcp-user'
@@ -50,6 +59,21 @@ export IPTV_PASSWORD='your-epg-password'
 export IPTV_AUTH_URL='http://your-eds-host:port/EDS/jsp/AuthenticationURL'
 export IPTV_STB_ID_PREFIX='your-stb-id-prefix'
 export IPTV_INTERFACE='eth0'
+```
+
+`/opt/iptv/var/iptv.env`, which the systemd unit reads as its
+`EnvironmentFile`, takes plain assignments instead: it is not a shell script, so
+an `export` prefix makes systemd ignore the line and start the service without
+that credential. Drop it:
+
+```bash
+IPTV_DHCP_USER='your-dhcp-user'
+IPTV_DHCP_PASSWORD='your-dhcp-password'
+IPTV_USER_ID='your-epg-user-id'
+IPTV_PASSWORD='your-epg-password'
+IPTV_AUTH_URL='http://your-eds-host:port/EDS/jsp/AuthenticationURL'
+IPTV_STB_ID_PREFIX='your-stb-id-prefix'
+IPTV_INTERFACE='eth0'
 ```
 
 | Setting | Purpose |
@@ -83,7 +107,8 @@ there before the unit can start it:
 sudo install -d /opt/iptv/target/release /opt/iptv/var
 sudo install -m 0755 target/x86_64-unknown-linux-musl/release/iptv-media-server \
     /opt/iptv/target/release/iptv-media-server
-sudo install -m 0600 /dev/null /opt/iptv/var/iptv.env   # then fill in the IPTV_* values
+# Create the environment file once; keep the credentials already in it.
+[ -e /opt/iptv/var/iptv.env ] || sudo install -m 0600 /dev/null /opt/iptv/var/iptv.env
 sudo install -m 0644 deploy/systemd/iptv-media-server.service /etc/systemd/system/
 ```
 
@@ -259,12 +284,15 @@ modes.
 
 Four workflows, each scoped to what it checks:
 
-| Workflow | Runs on | Checks |
-| --- | --- | --- |
-| `ci-rust.yml` | changes to `src/`, `tests/`, the manifest | fmt, clippy, tests, release build, static musl build |
-| `ci-scripts.yml` | changes to `scripts/`, `deploy/`, fixtures | shellcheck, shfmt, frozen-fixture integrity |
-| `ci-luci.yml` | changes to the LuCI views | JSON validity, view syntax, menu/ACL coverage |
-| `release.yml` | a `v*` tag | three static binaries plus `.ipk`/`.apk` per architecture, uploaded to the release |
+| Workflow | Pull requests | Pushes | Checks |
+| --- | --- | --- | --- |
+| `ci-rust.yml` | every one | `src/`, `tests/`, `Cargo.*` | fmt, clippy, tests, release build |
+| `ci-scripts.yml` | every one | `scripts/`, `deploy/`, fixtures | shellcheck, shfmt, fixture integrity |
+| `ci-luci.yml` | every one | the LuCI views and their check | JSON validity, view syntax, menu/ACL coverage |
+| `release.yml` | — | a `v*` tag | three static binaries plus `.ipk`/`.apk` per architecture |
+
+A push only runs the workflows its paths touch, but every pull request runs all
+three, so each can be a required check without leaving the others pending.
 
 `renovate.json` automerges every update, major bumps and the toolchain included.
 Renovate's own PR needs the [Renovate app](https://github.com/apps/renovate)
@@ -273,6 +301,9 @@ installed for any of this to run.
 `platformAutomerge` alone does not make CI a precondition: GitHub merges as soon
 as branch protection allows, so require the `ci-rust`, `ci-scripts` and
 `ci-luci` checks on `main` or a broken bump can merge before its checks finish.
+Those workflows run on every pull request rather than only on the paths they
+cover, because a required check that a pull request never triggers stays pending
+and blocks it forever.
 
 ## Public-release hygiene
 

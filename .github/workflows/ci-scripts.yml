@@ -4,8 +4,8 @@ on:
   push:
     branches: ['**']
     paths: ['scripts/**', 'deploy/**', 'tests/fixtures/**', 'schemas/**']
+  # No path filter, for the reason given in ci-rust.yml.
   pull_request:
-    paths: ['scripts/**', 'deploy/**', 'tests/fixtures/**', 'schemas/**']
   workflow_dispatch:
 
 permissions:

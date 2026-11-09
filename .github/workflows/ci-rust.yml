@@ -4,8 +4,9 @@ on:
   push:
     branches: ['**']
     paths: ['src/**', 'tests/**', 'Cargo.toml', 'Cargo.lock', 'clippy.toml', 'rust-toolchain.toml']
+  # No path filter: this is a required check, and one that a pull request never
+  # triggers stays pending and blocks the merge.
   pull_request:
-    paths: ['src/**', 'tests/**', 'Cargo.toml', 'Cargo.lock', 'clippy.toml', 'rust-toolchain.toml']
   workflow_dispatch:
 
 permissions:
