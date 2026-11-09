@@ -93,9 +93,9 @@ previous state afterwards.
   `tests/fixture_integrity.rs` checks each file against `manifest.json`'s
   SHA-256 and fails on an unlisted file or a missing coverage case. Never edit
   a fixture to make a test pass; change the code, and if the behaviour really
-  changes, update the manifest in the same commit and say so in the README.
+  changes, update the manifest in the same commit and say so in `docs/behaviour.md`.
 - Behaviour that differs from what the fixtures record is deliberate,
-  documented in the README, and covered by a test (lease renewal, 503 retries,
+  documented in `docs/`, and covered by a test (lease renewal, 503 retries,
   routing isolation, logo directory, HTTP-only).
 - Keep it lean: no defensive checks inside trusted code, no abstractions for
   hypothetical needs; validate at system boundaries (CLI, HTTP requests,
