@@ -14,8 +14,8 @@ values at runtime for an authorized service.
 
 Grab the binary for your architecture from the
 [releases](https://github.com/llc1123/iptv/releases) page — `x86_64`, `aarch64`
-and `armv7` static musl builds, each with matching `.ipk` and `.apk` OpenWrt
-packages — or build it from source:
+and `armv7` static musl builds, each with a matching `.ipk` and `.apk` OpenWrt
+package — or build it from source:
 
 ```bash
 rustup toolchain install 1.87.0 --profile minimal
@@ -31,6 +31,13 @@ rtnetlink instead of calling `ip`.
 Dropping `--target` builds against the host's libc instead, which is fine for
 local use but is not the self-contained binary the release ships and cannot run
 in a `scratch` image or on OpenWrt.
+
+The OpenWrt packages carry OpenWrt's own architecture names, which are narrower
+than the Rust target names: `x86_64`, `aarch64_cortex-a53` and
+`arm_cortex-a7_neon-vfpv4`. A router whose `opkg`/`apk` reports another
+architecture refuses to install them even if the CPU would run the binary, so
+build for that target with `scripts/make-openwrt-package.sh --arch <its arch>`
+after `rustup target add` for the matching Rust triple.
 
 ## Configure credentials and deployment values
 
@@ -69,6 +76,18 @@ It needs `CAP_NET_RAW` and `CAP_NET_ADMIN`, `/proc` to check them, and the
 IPTV interface in its network namespace. The bundled
 `deploy/systemd/iptv-media-server.service` grants exactly those capabilities
 and reads the variables above from `/opt/iptv/var/iptv.env`.
+
+The unit expects the tree at `/opt/iptv`, with the binary at
+`/opt/iptv/target/release/iptv-media-server`, so a build has to be installed
+there before the unit can start it:
+
+```bash
+sudo install -d /opt/iptv/target/release /opt/iptv/var
+sudo install -m 0755 target/x86_64-unknown-linux-musl/release/iptv-media-server \
+    /opt/iptv/target/release/iptv-media-server
+sudo install -m 0600 var/iptv-e2e.env /opt/iptv/var/iptv.env   # or write it directly
+sudo install -m 0644 deploy/systemd/iptv-media-server.service /etc/systemd/system/
+```
 
 | URL | Purpose |
 | --- | --- |
@@ -138,7 +157,12 @@ check on the LuCI views. It runs offline against a populated cache; CI sets
 
 The live gate starts the release binary against the real provider. It needs
 a mode-600 `var/iptv-e2e.env` holding the `IPTV_*` variables above, and nothing
-else listening on its port:
+else listening on its port.
+
+Stop any other owner of the IPTV interface first — a running media server, or a
+netifd `proto iptv` lease daemon on OpenWrt. The gate only checks that its port
+is free, which says nothing about the interface: a second DHCP client competes
+for the same binding and can cut off playback that is already running.
 
 ```bash
 IPTV_ENABLE_REAL_E2E=1 bash scripts/test-real-e2e.sh
@@ -151,6 +175,28 @@ waiting for T1:
 set -a; . var/iptv-e2e.env; set +a
 cargo test --test renewal_live -- --ignored
 ```
+
+That test performs a real DHCP exchange, so the test process needs
+`CAP_NET_RAW` and `CAP_NET_ADMIN` just as the server does, and the credentials
+have to survive into it. Running the shell as root covers both; otherwise grant
+the capabilities to the test binary, which is built per target and therefore
+needs the grant after each rebuild:
+
+```bash
+sudo setcap cap_net_raw,cap_net_admin+ep \
+    "$(find target/release/deps -maxdepth 1 -name 'renewal_live-*' -type f ! -name '*.d' | head -1)"
+```
+
+Build with `--release` first so the binary exists, and re-run `setcap` whenever
+it is rebuilt. A plain `sudo cargo test` will not work: sudo resets `PATH`, so a
+toolchain installed under your home directory disappears. Preserve both:
+
+```bash
+sudo -E env "PATH=$PATH" cargo test --release --test renewal_live -- --ignored
+```
+
+`-E` keeps the exported `IPTV_*` variables, which is why the `set -a` line above
+matters.
 
 ### Golden fixtures are frozen
 
@@ -240,10 +286,15 @@ Four workflows, each scoped to what it checks:
 | `ci-luci.yml` | changes to the LuCI views | JSON validity, view syntax, menu/ACL coverage |
 | `release.yml` | a `v*` tag | three static binaries plus `.ipk`/`.apk` per architecture, uploaded to the release |
 
-`renovate.json` automerges every update, major bumps and the toolchain included:
-CI has to pass first, and a bump that breaks the build or a lint simply never
-merges. Renovate's own PR needs the [Renovate app](https://github.com/apps/renovate)
-installed on the repository for any of this to run.
+`renovate.json` automerges every update, major bumps and the toolchain included.
+Renovate's own PR needs the [Renovate app](https://github.com/apps/renovate)
+installed for any of this to run.
+
+`platformAutomerge` alone does not make CI a precondition: GitHub merges as soon
+as the branch protection rules allow. Require the `ci-rust`, `ci-scripts` and
+`ci-luci` checks in the `main` branch protection rule, and the guarantee holds —
+a bump that breaks the build, clippy or the fixture check cannot merge. Without
+those required checks it can.
 
 ## Public-release hygiene
 

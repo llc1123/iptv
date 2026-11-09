@@ -41,19 +41,23 @@ else {
 	if (!grant.read?.uci?.includes('iptv')) errors.push('acl: read.uci must include iptv');
 	if (!grant.write?.uci?.includes('iptv')) errors.push('acl: write.uci must include iptv');
 	// A view may run a read helper (status, log) or a write one (restart), so
-	// both grants count.
-	const scripts = [
-		...Object.keys(grant.read?.file ?? {}),
-		...Object.keys(grant.write?.file ?? {})
-	];
+	// both grants count. An entry that names the helper without granting `exec`
+	// is not a grant: rpcd checks the operation list, so only entries that
+	// include `exec` are callable.
+	const execScripts = new Set();
+	for (const section of [grant.read, grant.write]) {
+		for (const [path, operations] of Object.entries(section?.file ?? {})) {
+			if (Array.isArray(operations) && operations.includes('exec')) execScripts.add(path);
+		}
+	}
 	for (const entry of Object.values(menu)) {
 		const path = entry.action?.path;
 		if (!path) continue;
 		const view = readFileSync(`${base}/htdocs/luci-static/resources/view/${path}.js`, 'utf8');
 		for (const match of view.matchAll(/fs\.exec\(\s*'([^']+)'/g)) {
 			const script = match[1];
-			if (!scripts.includes(script))
-				errors.push(`acl: ${path}.js runs ${script}, which neither read.file nor write.file grants`);
+			if (!execScripts.has(script))
+				errors.push(`acl: ${path}.js runs ${script}, which no read.file or write.file entry grants with exec`);
 		}
 	}
 }
