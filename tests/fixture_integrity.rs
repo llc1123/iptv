@@ -72,15 +72,16 @@ fn no_unlisted_fixture_is_present() {
         .map(|entry| entry["path"].as_str().expect("path is a string"))
         .collect();
     let mut unlisted = Vec::new();
+    // Every file counts, whatever its extension: a stray note or a hand-edited
+    // copy is still something the frozen corpus did not contain.
     for entry in fs::read_dir(FIXTURES).expect("fixtures directory is readable") {
         let path = entry.expect("directory entry is readable").path();
-        if path.extension().is_some_and(|ext| ext == "json")
-            && path.file_name() != Some("manifest.json".as_ref())
-        {
-            let name = path.file_name().expect("has a name").to_string_lossy();
-            if !listed.contains(name.as_ref()) {
-                unlisted.push(name.into_owned());
-            }
+        if !path.is_file() || path.file_name() == Some("manifest.json".as_ref()) {
+            continue;
+        }
+        let name = path.file_name().expect("has a name").to_string_lossy();
+        if !listed.contains(name.as_ref()) {
+            unlisted.push(name.into_owned());
         }
     }
     assert!(

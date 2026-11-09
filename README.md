@@ -14,17 +14,23 @@ values at runtime for an authorized service.
 
 Grab the binary for your architecture from the
 [releases](https://github.com/llc1123/iptv/releases) page — `x86_64`, `aarch64`
-and `armv7` are published as static musl builds with an OpenWrt package — or
-build it from source:
+and `armv7` static musl builds, each with matching `.ipk` and `.apk` OpenWrt
+packages — or build it from source:
 
 ```bash
 rustup toolchain install 1.87.0 --profile minimal
-cargo build --release --locked --bin iptv-media-server
+rustup target add --toolchain 1.87.0 x86_64-unknown-linux-musl
+cargo build --release --locked --target x86_64-unknown-linux-musl --bin iptv-media-server
 ```
 
-The result is one self-contained file: no C dependencies, no `unsafe`, and no
-runtime packages beyond the kernel. It configures the interface over rtnetlink
-instead of calling `ip`.
+That produces `target/x86_64-unknown-linux-musl/release/iptv-media-server`: one
+self-contained file, statically linked, with no C dependencies, no `unsafe` and
+no runtime packages beyond the kernel. It configures the interface over
+rtnetlink instead of calling `ip`.
+
+Dropping `--target` builds against the host's libc instead, which is fine for
+local use but is not the self-contained binary the release ships and cannot run
+in a `scratch` image or on OpenWrt.
 
 ## Configure credentials and deployment values
 
@@ -52,7 +58,11 @@ it does not spoof the Ethernet source address.
 ## Run the media server
 
 ```bash
-sudo -E ./iptv-media-server --interface "$IPTV_INTERFACE" --host 127.0.0.1 --port 8080
+# From a source build (see Install for the target directory):
+sudo -E target/x86_64-unknown-linux-musl/release/iptv-media-server --interface "$IPTV_INTERFACE" --host 127.0.0.1 --port 8080
+# From a downloaded release, wherever you put it; the file name carries the
+# version and architecture, e.g. iptv-media-server_1.0.0_x86_64:
+sudo -E ./iptv-media-server_1.0.0_x86_64 --interface "$IPTV_INTERFACE" --host 127.0.0.1 --port 8080
 ```
 
 It needs `CAP_NET_RAW` and `CAP_NET_ADMIN`, `/proc` to check them, and the
@@ -173,8 +183,17 @@ installed, e.g. `--network host --cap-add NET_RAW --cap-add NET_ADMIN`.
 `luci-compat`) with a procd service, a UCI config (`/etc/config/iptv`) and
 `Services > IPTV` pages for status, settings and the log. Releases publish it
 as both an `.ipk` (opkg, OpenWrt 24.10 and older) and an `.apk`
-(apk-tools, 25.x and later), each bundling the matching server binary, built by
-`scripts/make-openwrt-package.sh`.
+(apk-tools 3, OpenWrt 25.x and later), each bundling the matching server
+binary, built by `scripts/make-openwrt-package.sh`.
+
+apk v3 is a block container, not a tar, and only `apk mkpkg` writes it — the
+apk-tools inside an OpenWrt image is built without that applet, so the script
+needs one that has it: point `IPTV_APK_MKPKG` at the OpenWrt SDK's host `apk`
+(`staging_dir/host/bin/apk`) and it refuses rather than emitting a package the
+router would reject. Install an unsigned `.ipk` with
+`opkg install --force-signature`, or an unsigned `.apk` with
+`apk add --allow-untrusted`; both were verified on their respective releases
+(24.10.4 with opkg, 25.12.6 with apk-tools 3.0.5).
 
 The service runs in one of two modes:
 

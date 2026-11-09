@@ -3,9 +3,17 @@ name: LuCI
 on:
   push:
     branches: ['**']
-    paths: ['deploy/openwrt/luci-app-iptv/htdocs/**', 'scripts/check-luci.mjs']
+    paths:
+      - 'deploy/openwrt/luci-app-iptv/htdocs/**'
+      - 'deploy/openwrt/luci-app-iptv/root/usr/share/luci/menu.d/**'
+      - 'deploy/openwrt/luci-app-iptv/root/usr/share/rpcd/acl.d/**'
+      - 'scripts/check-luci.mjs'
   pull_request:
-    paths: ['deploy/openwrt/luci-app-iptv/htdocs/**', 'scripts/check-luci.mjs']
+    paths:
+      - 'deploy/openwrt/luci-app-iptv/htdocs/**'
+      - 'deploy/openwrt/luci-app-iptv/root/usr/share/luci/menu.d/**'
+      - 'deploy/openwrt/luci-app-iptv/root/usr/share/rpcd/acl.d/**'
+      - 'scripts/check-luci.mjs'
   workflow_dispatch:
 
 permissions:

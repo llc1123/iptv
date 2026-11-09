@@ -16,9 +16,33 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# A tag push and a manual dispatch name the release differently: the tag is the
+# ref for the first, the `tag` input for the second. Everything downstream reads
+# this job's output rather than GITHUB_REF_NAME, which is a branch name when the
+# workflow is dispatched from a branch.
 jobs:
+  resolve:
+    name: Resolve the release tag
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+      version: ${{ steps.pick.outputs.version }}
+    steps:
+      - id: pick
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag=${INPUT_TAG:-${GITHUB_REF_NAME}}
+          case "$tag" in
+            v[0-9]*) ;;
+            *) echo "refusing to release '$tag': it is not a v* tag" >&2; exit 1 ;;
+          esac
+          printf 'tag=%s\n' "$tag" >>"$GITHUB_OUTPUT"
+          printf 'version=%s\n' "${tag#v}" >>"$GITHUB_OUTPUT"
+
   build:
     name: ${{ matrix.name }}
+    needs: resolve
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -37,6 +61,8 @@ jobs:
             openwrt_arch: arm_cortex-a7_neon-vfpv4
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
 
       - name: Install the pinned toolchain
         run: rustup toolchain install --profile minimal
@@ -56,16 +82,34 @@ jobs:
             --target ${{ matrix.target }} --bin iptv-media-server
 
       - name: Stage the binary
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
-          version=${GITHUB_REF_NAME#v}
+          version=$VERSION
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/iptv-media-server" \
              "dist/iptv-media-server_${version}_${{ matrix.name }}"
           chmod 0755 "dist/iptv-media-server_${version}_${{ matrix.name }}"
 
-      - name: Build the OpenWrt package
+      # apk v3 needs `apk mkpkg`, which the apk-tools in an OpenWrt image is
+      # built without. The SDK's host apk has it, so fetch the SDK once.
+      - name: Fetch the OpenWrt SDK's apk
+        env:
+          SDK: openwrt-sdk-25.12.6-x86-64_gcc-14.3.0_musl.Linux-x86_64
         run: |
-          version=${GITHUB_REF_NAME#v}
+          curl -fsSL -o /tmp/sdk.tar.zst \
+            "https://downloads.openwrt.org/releases/25.12.6/targets/x86/64/${SDK}.tar.zst"
+          mkdir -p /tmp/sdk
+          tar --zstd -xf /tmp/sdk.tar.zst -C /tmp/sdk --strip-components=1 \
+            --wildcards "*/staging_dir/host/bin/*" "*/staging_dir/host/lib/*"
+          /tmp/sdk/staging_dir/host/bin/apk mkpkg --help | grep -q 'Mkpkg options'
+          echo "IPTV_APK_MKPKG=/tmp/sdk/staging_dir/host/bin/apk" >>"$GITHUB_ENV"
+
+      - name: Build the OpenWrt package
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          version=$VERSION
           ./scripts/make-openwrt-package.sh \
             --binary "target/${{ matrix.target }}/release/iptv-media-server" \
             --arch "${{ matrix.openwrt_arch }}" \
@@ -80,7 +124,7 @@ jobs:
 
   publish:
     name: Publish the release
-    needs: build
+    needs: [resolve, build]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -99,12 +143,18 @@ jobs:
 
       # `gh release create` is idempotent enough for a re-run: the tag exists,
       # so the notes are updated and the assets replaced.
+      # A rerun finds the release it made the first time; uploading to it with
+      # --clobber replaces the assets instead of failing on "already exists".
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
-          tag=${GITHUB_REF_NAME}
-          gh release create "$tag" dist/* \
-            --title "IPTV media server $tag" \
-            --generate-notes \
-            --verify-tag
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "IPTV media server $TAG" \
+              --generate-notes \
+              --verify-tag
+          fi
