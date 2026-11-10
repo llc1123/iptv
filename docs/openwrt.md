@@ -11,9 +11,12 @@ Releases publish the application with the matching server binary as both
 - `.ipk` — opkg, OpenWrt 24.10 and older
 - `.apk` — apk-tools 3, OpenWrt 25.x and later
 
-Install an unsigned package with `opkg install --force-signature` or
-`apk add --allow-untrusted`. Both were verified on their respective releases
-(24.10.4 with opkg, 25.12.6 with apk-tools 3.0.5).
+Install a local file by path — `opkg install ./luci-app-iptv_1.0.0_x86_64.ipk`
+or `apk add --allow-untrusted ./luci-app-iptv_1.0.0_x86_64.apk`. opkg needs no
+flag for a local file; `--force-signature` also relaxes verification for the
+whole run, including dependencies it fetches from a repository, so leave it off.
+Both formats were verified on their respective releases (24.10.4 with opkg,
+25.12.6 with apk-tools 3.0.5).
 
 The packages carry OpenWrt's architecture names, not Rust's: `x86_64`,
 `aarch64_cortex-a53` and `arm_cortex-a7_neon-vfpv4`. A router reporting any other

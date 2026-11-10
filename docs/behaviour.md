@@ -29,13 +29,23 @@ traffic from the leased address (`ip rule` at the same priority, ahead of
 `main`). Both numbers come from `--route-table` (default 4788, "IPTV" on a
 keypad; valid range 1–32765 so the rule stays ahead of `main`).
 
+**Pick an unused table.** Startup replaces the routes for the leased subnet and
+default in that table, and deletes every existing rule that selects it, so a
+table another service already uses loses its routes and rules. Check
+`ip route show table 4788` before the first start and move aside with
+`--route-table` if it is taken.
+
 The EPG and HLS clients bind to that address and the interface, so they reach
 the provider whatever the host's own routes or overlapping subnets are, and the
 host's other traffic never enters the IPTV network. No provider subnets are
 assumed or hardcoded.
 
-On `down`, the address comes off and the rule and table are cleared, so repeated
-starts do not accumulate rules.
+Cleanup differs by mode. Under netifd, `ifdown iptv` removes the address, its
+routes and the rule. Standalone, stopping the process (SIGTERM, Ctrl-C, or a
+crash) leaves the address and rule in place — they are removed only when a
+renewal fails or the provider hands out a different address, which exits with
+status 1. A restart reuses the table and replaces its routes, so nothing
+accumulates, but the address stays on the interface after a plain stop.
 
 ## One subscription, one session
 
@@ -58,8 +68,10 @@ a second subscription with its own MAC.
 The provider answers a large share of concurrent programme-window requests with
 HTTP 503. The server retries the failed windows with lower concurrency and
 backoff. Windows that still fail keep the previous snapshot's programmes, so a
-refresh never wipes the guide; a partly failed refresh is never treated as
-success.
+refresh never wipes the guide. It is not an all-or-nothing operation: the refresh
+succeeds when at least one window answered, and the failed count is logged, so a
+successful `POST /metadata/sync` or a completed refresh does not mean every
+window was fetched. Only a cycle where nothing succeeded is an error.
 
 ## Logo directory
 

@@ -63,11 +63,16 @@ takes the same names without the `export` prefix — it is not a shell script, a
 
 ```bash
 sudo -E target/x86_64-unknown-linux-musl/release/iptv-media-server \
-    --interface "$IPTV_INTERFACE" --host 0.0.0.0 --port 8080
+    --interface "$IPTV_INTERFACE" --host 127.0.0.1 --port 8080
 ```
 
 It needs `CAP_NET_RAW` and `CAP_NET_ADMIN`, `/proc` to check them, and the IPTV
-interface in its namespace. `deploy/systemd/iptv-media-server.service` grants
+interface in its namespace.
+
+There is no authentication: anyone who can reach the port can use the
+subscription's streams and trigger refreshes. Loopback is the default for that
+reason. To serve other machines, bind a trusted address and restrict it with a
+firewall, or put an authenticating reverse proxy in front. `deploy/systemd/iptv-media-server.service` grants
 exactly those capabilities and expects this layout:
 
 ```bash

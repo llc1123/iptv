@@ -7,6 +7,10 @@ cargo fetch --locked
 bash scripts/verify.sh
 ```
 
+It needs, besides the pinned Rust toolchain: `shellcheck`, `shfmt` **3.8.0**
+(formatting shifts between minor versions, and CI pins that release) and
+`node` for the LuCI views.
+
 Offline against a populated cache; CI sets `VERIFY_ALLOW_NETWORK=1` so cargo may
 fetch. It runs rustfmt, clippy with warnings denied, the test suite (in-process
 loopback mock provider only), a release build, the frozen-fixture integrity
