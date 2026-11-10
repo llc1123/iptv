@@ -16,12 +16,19 @@ for opkg. That needs no signature flag: `--force-signature` would also relax
 verification for dependencies fetched from a repository during the same run.
 
 For apk, install the dependency from the trusted feeds first, then the local
-file with the network off, so the untrusted flag cannot reach a repository:
+file with the network off *and* no repository index or cache reachable, so the
+untrusted flag cannot widen trust to anything but that file:
 
 ```bash
 apk add rpcd-mod-file
-apk add --allow-untrusted --network=no ./luci-app-iptv_1.0.0_x86_64.apk
+apk add --allow-untrusted --network=no --repositories-file /dev/null --cache=no \
+    ./luci-app-iptv_1.0.0_x86_64.apk
 ```
+
+`--network=no` alone is not enough: measured on 25.12.6, the install still opened
+the eight cached repository indexes (`opening from cache https://downloads...`,
+all missing) before proceeding. With `--repositories-file /dev/null --cache=no`
+it opened none.
 
 Both formats were verified on their respective releases (24.10.4 with opkg,
 25.12.6 with apk-tools 3.0.5).
