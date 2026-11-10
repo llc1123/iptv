@@ -21,7 +21,7 @@ jobs:
     name: fmt, clippy, test, build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The toolchain, rustfmt and clippy come from rust-toolchain.toml so CI and
       # local runs agree; `cargo +1.87.0` makes that explicit.
