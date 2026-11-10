@@ -5,7 +5,7 @@
 
 lines="${1:-300}"
 case "$lines" in
-	''|*[!0-9]*) lines=300 ;;
+	'' | *[!0-9]*) lines=300 ;;
 esac
 [ "$lines" -gt 2000 ] && lines=2000
 

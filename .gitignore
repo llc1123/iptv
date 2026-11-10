@@ -1,10 +1,9 @@
-# Python and local tooling.
-.venv/
+# Node tooling.
+/node_modules/
+
+# Python bytecode, in case a fixture tool ever comes back.
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.ruff_cache/
-.ty/
 
 # Runtime output and generated release artifacts.
 /var/
@@ -30,3 +29,6 @@ __pycache__/
 # Rust build artifacts and local verification output.
 /target/
 /.omo/
+
+# Node tooling for the release workflow scripts.
+/node_modules/

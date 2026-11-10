@@ -1,0 +1,51 @@
+name: Rust
+
+on:
+  push:
+    branches: ['**']
+    paths: ['src/**', 'tests/**', 'Cargo.toml', 'Cargo.lock', 'clippy.toml', 'rust-toolchain.toml']
+  # No path filter: this is a required check, and one that a pull request never
+  # triggers stays pending and blocks the merge.
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: fmt, clippy, test, build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain, rustfmt and clippy come from rust-toolchain.toml so CI and
+      # local runs agree; `cargo +1.87.0` makes that explicit.
+      - name: Install the pinned toolchain
+        run: rustup toolchain install --profile minimal --component rustfmt,clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust
+
+      - name: Format
+        run: cargo +1.87.0 fmt --all -- --check
+
+      - name: Clippy
+        run: cargo +1.87.0 clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo +1.87.0 test --locked --tests --bins --all-features
+
+      - name: Release build
+        run: cargo +1.87.0 build --locked --release --bin iptv-media-server
+
+      - name: Static musl build
+        run: |
+          rustup target add --toolchain 1.87.0 x86_64-unknown-linux-musl
+          cargo +1.87.0 build --locked --release \
+            --target x86_64-unknown-linux-musl --bin iptv-media-server

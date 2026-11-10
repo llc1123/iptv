@@ -7,6 +7,9 @@ After=network-online.target
 Type=simple
 WorkingDirectory=/opt/iptv
 EnvironmentFile=/opt/iptv/var/iptv.env
+# Listens on all interfaces because players on the LAN need to reach it. There
+# is no authentication: restrict the port with a firewall, or bind 127.0.0.1 and
+# front it with an authenticating proxy.
 ExecStart=/opt/iptv/target/release/iptv-media-server --host 0.0.0.0 --port 8080
 Restart=on-failure
 RestartSec=5s
