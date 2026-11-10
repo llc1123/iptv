@@ -23,7 +23,7 @@ concurrency:
 jobs:
   resolve:
     name: Resolve the release tag
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       tag: ${{ steps.pick.outputs.tag }}
       version: ${{ steps.pick.outputs.version }}
@@ -43,7 +43,7 @@ jobs:
   build:
     name: ${{ matrix.name }}
     needs: resolve
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -125,7 +125,7 @@ jobs:
   publish:
     name: Publish the release
     needs: [resolve, build]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
 
