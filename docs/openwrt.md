@@ -11,26 +11,13 @@ Releases publish the application with the matching server binary as both
 - `.ipk` — opkg, OpenWrt 24.10 and older
 - `.apk` — apk-tools 3, OpenWrt 25.x and later
 
-Install a local file by path — `opkg install ./luci-app-iptv_1.0.0_x86_64.ipk`
-for opkg. That needs no signature flag: `--force-signature` would also relax
-verification for dependencies fetched from a repository during the same run.
-
-For apk, install the dependency from the trusted feeds first, then the local
-file with the network off *and* no repository index or cache reachable, so the
-untrusted flag cannot widen trust to anything but that file:
-
 ```bash
-apk add rpcd-mod-file
-apk add --allow-untrusted --network=no --repositories-file /dev/null --cache=no \
-    ./luci-app-iptv_1.0.0_x86_64.apk
+opkg install ./luci-app-iptv_1.0.0_x86_64.ipk                # 24.10 and older
+apk add --allow-untrusted ./luci-app-iptv_1.0.0_x86_64.apk   # 25.x
 ```
 
-`--network=no` alone is not enough: measured on 25.12.6, the install still opened
-the eight cached repository indexes (`opening from cache https://downloads...`,
-all missing) before proceeding. With `--repositories-file /dev/null --cache=no`
-it opened none.
-
-Both formats were verified on their respective releases (24.10.4 with opkg,
+The packages are unsigned, hence `--allow-untrusted` for apk; opkg installs a
+local file without a flag. Both formats were verified on their respective releases (24.10.4 with opkg,
 25.12.6 with apk-tools 3.0.5).
 
 The packages carry OpenWrt's architecture names, not Rust's: `x86_64`,
