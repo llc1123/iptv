@@ -12,9 +12,17 @@ Releases publish the application with the matching server binary as both
 - `.apk` — apk-tools 3, OpenWrt 25.x and later
 
 Install a local file by path — `opkg install ./luci-app-iptv_1.0.0_x86_64.ipk`
-or `apk add --allow-untrusted ./luci-app-iptv_1.0.0_x86_64.apk`. opkg needs no
-flag for a local file; `--force-signature` also relaxes verification for the
-whole run, including dependencies it fetches from a repository, so leave it off.
+for opkg. That needs no signature flag: `--force-signature` would also relax
+verification for dependencies fetched from a repository during the same run.
+
+For apk, install the dependency from the trusted feeds first, then the local
+file with the network off, so the untrusted flag cannot reach a repository:
+
+```bash
+apk add rpcd-mod-file
+apk add --allow-untrusted --network=no ./luci-app-iptv_1.0.0_x86_64.apk
+```
+
 Both formats were verified on their respective releases (24.10.4 with opkg,
 25.12.6 with apk-tools 3.0.5).
 
