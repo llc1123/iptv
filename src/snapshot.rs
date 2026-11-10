@@ -117,10 +117,10 @@ impl Snapshot {
                 render_xmltv_with_logos(&self.channels, &self.programmes, self.zone, base, logos)?
             }
         });
-        if let Ok(mut cache) = self.rendered.lock() {
-            if cache.len() < RENDER_CACHE_ENTRIES {
-                cache.insert(key, bytes.clone());
-            }
+        if let Ok(mut cache) = self.rendered.lock()
+            && cache.len() < RENDER_CACHE_ENTRIES
+        {
+            cache.insert(key, bytes.clone());
         }
         Ok(bytes)
     }

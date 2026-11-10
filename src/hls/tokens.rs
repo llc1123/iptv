@@ -141,7 +141,7 @@ fn random_token(suffix: &str) -> Result<String, TokenStoreError> {
     let mut bytes = [0_u8; 18];
     getrandom::fill(&mut bytes).map_err(|_| TokenStoreError::Unavailable)?;
     let mut token = String::with_capacity(24 + suffix.len());
-    for chunk in bytes.chunks_exact(3) {
+    for chunk in bytes.as_chunks::<3>().0 {
         let bits = u32::from(chunk[0]) << 16 | u32::from(chunk[1]) << 8 | u32::from(chunk[2]);
         for shift in [18, 12, 6, 0] {
             token.push(char::from(ALPHABET[(bits >> shift & 63) as usize]));
