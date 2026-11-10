@@ -23,7 +23,7 @@ concurrency:
 jobs:
   resolve:
     name: Resolve the release tag
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       tag: ${{ steps.pick.outputs.tag }}
       version: ${{ steps.pick.outputs.version }}
@@ -43,7 +43,7 @@ jobs:
   build:
     name: ${{ matrix.name }}
     needs: resolve
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -60,7 +60,7 @@ jobs:
             target: armv7-unknown-linux-musleabihf
             openwrt_arch: arm_cortex-a7_neon-vfpv4
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.tag }}
 
@@ -72,13 +72,13 @@ jobs:
           shared-key: release-${{ matrix.target }}
 
       - name: Install the target
-        run: rustup target add --toolchain 1.87.0 ${{ matrix.target }}
+        run: rustup target add --toolchain 1.99.1 ${{ matrix.target }}
 
       # The bundled LLD links every musl target, so no C cross toolchain is
       # needed and the result is fully static.
       - name: Build
         run: |
-          cargo +1.87.0 build --locked --release \
+          cargo +1.99.1 build --locked --release \
             --target ${{ matrix.target }} --bin iptv-media-server
 
       - name: Stage the binary
@@ -116,7 +116,7 @@ jobs:
             --version "$version" \
             --output-dir dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.name }}
           path: dist/*
@@ -125,11 +125,11 @@ jobs:
   publish:
     name: Publish the release
     needs: [resolve, build]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: release-*
           merge-multiple: true
