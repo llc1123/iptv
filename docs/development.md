@@ -7,7 +7,7 @@ cargo fetch --locked
 bash scripts/verify.sh
 ```
 
-It needs, besides the pinned Rust toolchain: `shellcheck`, `shfmt` **3.8.0**
+It needs, besides the pinned Rust 1.99.1 toolchain: `shellcheck`, `shfmt` **3.8.0**
 (formatting shifts between minor versions, and CI pins that release) and
 `node` for the LuCI views.
 
@@ -31,7 +31,7 @@ same commit — never edit a fixture to make a test pass.
 ## Static builds
 
 ```bash
-rustup target add --toolchain 1.87.0 \
+rustup target add --toolchain 1.99.1 \
   x86_64-unknown-linux-musl aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
 cargo build --release --locked --target x86_64-unknown-linux-musl --bin iptv-media-server
 ```

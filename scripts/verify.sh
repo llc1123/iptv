@@ -10,7 +10,7 @@ run() {
     "$@"
 }
 
-cargo=(rustup run 1.87.0 cargo)
+cargo=(rustup run 1.99.1 cargo)
 # The local gate runs offline against a populated cache; CI sets
 # VERIFY_ALLOW_NETWORK=1 so cargo may fetch the crates it needs.
 offline=(--offline --locked)

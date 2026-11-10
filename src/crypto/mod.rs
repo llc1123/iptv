@@ -44,7 +44,7 @@ pub(crate) fn pkcs7_pad(input: &[u8]) -> Vec<u8> {
 pub(super) fn ede3_encrypt(key: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let cipher = TdesEde3::new_from_slice(key).map_err(|_| CryptoError::InvalidKeyLength)?;
     let mut output = Vec::with_capacity(plaintext.len());
-    for chunk in plaintext.chunks_exact(BLOCK) {
+    for chunk in plaintext.as_chunks::<BLOCK>().0 {
         let mut block = Block::<TdesEde3>::default();
         block.copy_from_slice(chunk);
         cipher.encrypt_block(&mut block);

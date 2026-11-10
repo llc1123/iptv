@@ -49,7 +49,7 @@ var/                    local runtime state, credentials and captures
 
 ## Toolchain
 
-- Rust is pinned to 1.87.0 (`rust-toolchain.toml`) with rustfmt and clippy.
+- Rust is pinned to 1.99.1 (`rust-toolchain.toml`) with rustfmt and clippy.
 - Static builds: `x86_64-unknown-linux-musl`, plus aarch64/armv7 musl linked
   with `rust-lld` via `.cargo/config.toml`. The dependency tree has no C code.
 - Shell is checked with shellcheck (error severity) and shfmt; the LuCI views

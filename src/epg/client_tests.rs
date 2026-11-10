@@ -152,13 +152,7 @@ async fn authentication_redirect_and_request_forms_are_python_shaped() {
         start_time_ms: 1_000,
         end_time_ms: 2_000,
     };
-    assert!(
-        client
-            .programmes(&query)
-            .await
-            .expect("programmes")
-            .is_empty()
-    );
+    assert_eq!(client.programmes(&query).await.expect("programmes"), []);
 
     let requests = provider.requests.lock().expect("request lock").clone();
     let login = requests

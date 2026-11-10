@@ -49,7 +49,7 @@ pub async fn read_request(stream: &mut TcpStream) -> std::io::Result<RequestReco
     let mut request_parts = request_line.split_whitespace();
     let method = request_parts.next().unwrap().to_owned();
     let target = request_parts.next().unwrap();
-    let (path, query) = target.split_once('?').map_or((target, ""), |parts| parts);
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let path = path.to_owned();
     let query = query.to_owned();
     let headers = header_text

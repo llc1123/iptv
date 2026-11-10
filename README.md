@@ -18,8 +18,8 @@ and `armv7` static musl builds, each with `.ipk`/`.apk` OpenWrt packages — or
 build it:
 
 ```bash
-rustup toolchain install 1.87.0 --profile minimal
-rustup target add --toolchain 1.87.0 x86_64-unknown-linux-musl
+rustup toolchain install 1.99.1 --profile minimal
+rustup target add --toolchain 1.99.1 x86_64-unknown-linux-musl
 cargo build --release --locked --target x86_64-unknown-linux-musl --bin iptv-media-server
 ```
 
