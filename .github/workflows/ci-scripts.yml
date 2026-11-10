@@ -18,9 +18,9 @@ concurrency:
 jobs:
   shell:
     name: shellcheck and shfmt
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install tools
         run: |
@@ -56,9 +56,9 @@ jobs:
 
   fixtures:
     name: frozen fixture integrity
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install the pinned toolchain
         run: rustup toolchain install --profile minimal
@@ -68,4 +68,4 @@ jobs:
           shared-key: rust
 
       - name: Verify the fixtures were not edited
-        run: cargo +1.87.0 test --locked --test fixture_integrity
+        run: cargo +1.99.1 test --locked --test fixture_integrity
