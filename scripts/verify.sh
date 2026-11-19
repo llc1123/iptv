@@ -37,6 +37,7 @@ run "${cargo[@]}" test "${offline[@]}" --test fixture_integrity
 run shellcheck --severity=error --external-sources "${openhwrt_scripts[@]}" scripts/*.sh
 run shfmt -d -i 4 -ci -s scripts/*.sh
 run shfmt -d -i 0 -ci -s "${openhwrt_scripts[@]}"
+run bash scripts/test-openwrt-init.sh
 
 # LuCI views are plain scripts that the LuCI loader wraps in a function, so they
 # are neither ES modules nor runnable files; a parse check is what fits them.
