@@ -14,13 +14,13 @@ function seconds(total) {
 	    minutes = Math.floor(n % 3600 / 60), secs = n % 60;
 
 	if (days > 0)
-		return '%dd %dh %dm'.format(days, hours, minutes);
+		return '%d 天 %d 小时 %d 分钟'.format(days, hours, minutes);
 	if (hours > 0)
-		return '%dh %dm'.format(hours, minutes);
+		return '%d 小时 %d 分钟'.format(hours, minutes);
 	if (minutes > 0)
-		return '%dm %ds'.format(minutes, secs);
+		return '%d 分钟 %d 秒'.format(minutes, secs);
 
-	return '%ds'.format(secs);
+	return '%d 秒'.format(secs);
 }
 
 function label(ok, textOn, textOff) {
@@ -59,15 +59,15 @@ return view.extend({
 		}
 
 		return E('table', { 'class': 'table' }, [
-			row(_('Service'), label(running, _('Running'), _('Stopped'))),
-			row(_('Local health check'), label(healthy, _('Reachable'), _('Unreachable'))),
-			row(_('Process ID'), text(data.pid)),
-			row(_('Uptime'), running ? seconds(data.uptime) : '-'),
-			row(_('IPTV interface'), text(data.interface)),
-			row(_('Lease address'), text(data.address)),
-			row(_('Lease routes'), '%s in table %s'.format(text(data.routes), text(data.route_table))),
-			row(_('Policy rules'), '%s for table %s'.format(text(data.rules), text(data.route_table))),
-			row(_('HTTP port'), text(data.port))
+			row(_('服务'), label(running, _('运行中'), _('已停止'))),
+			row(_('本地健康检查'), label(healthy, _('可访问'), _('无法访问'))),
+			row(_('进程 ID'), text(data.pid)),
+			row(_('运行时间'), running ? seconds(data.uptime) : '-'),
+			row(_('IPTV 接口'), text(data.interface)),
+			row(_('租约地址'), text(data.address)),
+			row(_('租约路由'), '%s 条，位于路由表 %s'.format(text(data.routes), text(data.route_table))),
+			row(_('策略规则'), '%s 条，指向路由表 %s'.format(text(data.rules), text(data.route_table))),
+			row(_('HTTP 端口'), text(data.port))
 		]);
 	},
 
@@ -82,7 +82,7 @@ return view.extend({
 		}, 5);
 
 		return E('div', { 'class': 'cbi-map' }, [
-			E('h2', {}, _('IPTV media server')),
+			E('h2', {}, _('IPTV 媒体服务器')),
 			E('div', { 'class': 'cbi-section' }, [
 				body,
 				E('div', { 'class': 'cbi-page-actions' }, [
@@ -90,13 +90,13 @@ return view.extend({
 						'class': 'btn cbi-button cbi-button-apply',
 						'click': ui.createHandlerFn(this, function() {
 							return this.restart().then(function() {
-								ui.addNotification(null, E('p', {}, _('Service restarted.')), 'info');
+								ui.addNotification(null, E('p', {}, _('服务已重启。')), 'info');
 								return self.status().then(function(fresh) {
 									dom.content(body, [ self.table(fresh) ]);
 								});
 							});
 						})
-					}, _('Restart service'))
+					}, _('重启服务'))
 				])
 			])
 		]);

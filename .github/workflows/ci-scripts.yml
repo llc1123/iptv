@@ -54,6 +54,9 @@ jobs:
             deploy/openwrt/luci-app-iptv/root/usr/libexec/iptv-status \
             deploy/openwrt/luci-app-iptv/root/lib/netifd/proto/iptv.sh
 
+      - name: Init script behavior
+        run: bash scripts/test-openwrt-init.sh
+
   fixtures:
     name: frozen fixture integrity
     runs-on: ubuntu-26.04

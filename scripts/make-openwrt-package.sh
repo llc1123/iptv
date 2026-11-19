@@ -105,7 +105,7 @@ Section: luci
 SourceDateEpoch: 0
 Architecture: $arch
 Installed-Size: $installed
-Description: LuCI support and the server binary for the IPTV media server
+Description: IPTV 媒体服务器及 LuCI 管理界面
 EOF
 printf '2.0\n' >"$ipk/debian-binary"
 # conffiles keeps a router's edits to /etc/config/iptv across upgrades.
@@ -120,7 +120,7 @@ tar -czf "$out/luci-app-iptv_${version}_${arch}.ipk" -C "$ipk" \
     --info "name:luci-app-iptv" \
     --info "version:$version-r0" \
     --info "arch:$arch" \
-    --info "description:LuCI support and the server binary for the IPTV media server" \
+    --info "description:IPTV 媒体服务器及 LuCI 管理界面" \
     --info "url:https://github.com/llc1123/iptv" \
     --info "license:GPL-3.0-or-later" \
     --info "depends:rpcd-mod-file" \

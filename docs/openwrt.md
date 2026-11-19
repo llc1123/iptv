@@ -86,3 +86,17 @@ traffic *to* the IPTV subnet through that table, which standalone mode does not
 do.
 
 procd's `respawn` takes the role of systemd's `Restart=on-failure` in both modes.
+
+## Transparent proxy bypass
+
+The LuCI settings page enables **绕过透明代理** by default
+(`option bypass_proxy '1'`). The service keeps its root user and runs with the
+`nogroup` primary group (GID 65534), using the existing socket-group exemption
+in compatible proxies such as OpenClash. This applies in both server modes;
+the netifd lease daemon is unchanged. No proxy configuration or firewall rules
+are modified.
+
+The setting also defaults to enabled when upgrading a configuration without
+this option. Set it to `0` to use the original service group. Saving and applying
+the setting restarts the service. Proxies without a GID 65534 exemption still
+need their own bypass configuration.

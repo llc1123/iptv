@@ -19,12 +19,12 @@ return view.extend({
 		    count = E('span', {}),
 		    output = E('pre', {
 			'style': 'max-height: 70vh; overflow: auto; margin: 0; font-size: 12px; white-space: pre-wrap; word-break: break-all;'
-		}, _('Loading…'));
+		}, _('正在加载…'));
 
 		function refresh() {
 			return self.fetch().then(function(body) {
 				var trimmed = body.replace(/\s+$/, '');
-				dom.content(output, [ trimmed || _('No log entries yet.') ]);
+				dom.content(output, [ trimmed || _('暂无日志记录。') ]);
 				dom.content(count, [ '%s'.format(trimmed ? trimmed.split('\n').length : 0) ]);
 			});
 		}
@@ -32,13 +32,13 @@ return view.extend({
 		poll.add(refresh, 10);
 
 		return E('div', { 'class': 'cbi-map' }, [
-			E('h2', {}, _('IPTV media server')),
+			E('h2', {}, _('IPTV 媒体服务器')),
 			E('div', { 'class': 'cbi-section' }, [
 				E('div', { 'class': 'cbi-section-node' }, [
 					E('p', {}, [
-						_('Last %s lines of the system log for this service.').format(this.lines),
+						_('显示系统日志中本服务的最近 %s 行。').format(this.lines),
 						' ',
-						E('span', {}, [ count, ' ', _('lines') ])
+						E('span', {}, [ _('共'), ' ', count, ' ', _('行') ])
 					]),
 					output,
 					E('div', { 'class': 'cbi-page-actions' }, [
@@ -47,7 +47,7 @@ return view.extend({
 							'click': ui.createHandlerFn(this, function() {
 								return refresh();
 							})
-						}, _('Refresh'))
+						}, _('刷新'))
 					])
 				])
 			])

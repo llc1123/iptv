@@ -4,7 +4,7 @@
 
 return network.registerProtocol('iptv', {
 	getI18n: function() {
-		return _('IPTV (authenticated DHCP)');
+		return _('IPTV（DHCP 认证）');
 	},
 
 	getIfname: function() {
@@ -34,15 +34,15 @@ return network.registerProtocol('iptv', {
 	renderFormOptions: function(s) {
 		var o;
 
-		o = s.taboption('general', form.Value, 'dhcp_user', _('DHCP user'));
+		o = s.taboption('general', form.Value, 'dhcp_user', _('DHCP 用户名'));
 		o.rmempty = false;
 
-		o = s.taboption('general', form.Value, 'dhcp_password', _('DHCP password'));
+		o = s.taboption('general', form.Value, 'dhcp_password', _('DHCP 密码'));
 		o.password = true;
 		o.rmempty = false;
 
-		o = s.taboption('general', form.Value, 'stb_id_prefix', _('STB ID prefix'),
-			_('Optional. Prepended to the DHCP hostname derived from the interface MAC.'));
+		o = s.taboption('general', form.Value, 'stb_id_prefix', _('STB ID 前缀'),
+			_('可选。添加在由接口 MAC 生成的 DHCP 主机名之前。'));
 
 	}
 });

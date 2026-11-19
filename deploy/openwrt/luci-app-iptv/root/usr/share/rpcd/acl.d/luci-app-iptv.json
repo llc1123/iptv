@@ -1,6 +1,6 @@
 {
 	"luci-app-iptv": {
-		"description": "Grant access to the IPTV media server configuration, status and log",
+		"description": "允许访问 IPTV 媒体服务器的配置、状态和日志",
 		"read": {
 			"uci": [ "iptv" ],
 			"file": {

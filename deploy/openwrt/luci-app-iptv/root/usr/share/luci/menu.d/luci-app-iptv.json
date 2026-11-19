@@ -7,7 +7,7 @@
 		}
 	},
 	"admin/services/iptv/status": {
-		"title": "Status",
+		"title": "状态",
 		"order": 10,
 		"action": {
 			"type": "view",
@@ -15,7 +15,7 @@
 		}
 	},
 	"admin/services/iptv/settings": {
-		"title": "Settings",
+		"title": "设置",
 		"order": 20,
 		"action": {
 			"type": "view",
@@ -23,7 +23,7 @@
 		}
 	},
 	"admin/services/iptv/log": {
-		"title": "Log",
+		"title": "日志",
 		"order": 30,
 		"action": {
 			"type": "view",
