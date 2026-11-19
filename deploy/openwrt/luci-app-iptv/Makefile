@@ -4,7 +4,7 @@
 
 include $(TOPDIR)/rules.mk
 
-LUCI_TITLE:=LuCI support for the IPTV media server
+LUCI_TITLE:=IPTV 媒体服务器 LuCI 管理界面
 LUCI_DEPENDS:=+rpcd-mod-file
 LUCI_PKGARCH:=all
 
