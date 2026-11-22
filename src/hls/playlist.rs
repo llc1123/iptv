@@ -1,7 +1,8 @@
 //! Rewrites upstream HLS playlists so every resource goes through `/_hls`.
 
-use super::tokens::{PlaybackContext, TokenStore, TokenStoreError};
+use super::tokens::{CAPACITY, PlaybackContext, TokenStore, TokenStoreError};
 use reqwest::Url;
+use std::collections::HashMap;
 
 /// Largest upstream playlist the proxy reads.
 pub const PLAYLIST_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -26,9 +27,21 @@ pub fn rewrite_playlist(
         .replace('\r', "\n");
     let mut parts = Vec::new();
     let mut resources = Vec::new();
+    let mut indexes = HashMap::new();
     let mut add = |parts: &mut Vec<Part<'_>>, value: &str, default_suffix: &str| {
-        parts.push(Part::Resource(resources.len()));
-        resources.push(resource(base_url, value, default_suffix)?);
+        let entry = resource(base_url, value, default_suffix)?;
+        let index = if let Some(index) = indexes.get(&entry) {
+            *index
+        } else {
+            if resources.len() == CAPACITY {
+                return Err(TokenStoreError::Capacity);
+            }
+            let index = resources.len();
+            indexes.insert(entry.clone(), index);
+            resources.push(entry);
+            index
+        };
+        parts.push(Part::Resource(index));
         Ok(())
     };
     for line in text.lines() {
@@ -85,6 +98,25 @@ fn resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write;
+
+    #[test]
+    fn too_many_distinct_resources_are_rejected_before_registration() {
+        let store = TokenStore::default();
+        let mut body = String::new();
+        for index in 0..=CAPACITY {
+            writeln!(body, "segment{index}.ts").unwrap();
+        }
+        assert_eq!(
+            rewrite_playlist(
+                body.as_bytes(),
+                &Url::parse("http://up/replay.m3u8").unwrap(),
+                &store,
+                PlaybackContext::NewReplay,
+            ),
+            Err(TokenStoreError::Capacity)
+        );
+    }
 
     #[test]
     fn repeated_uri_references_count_once_toward_capacity() {

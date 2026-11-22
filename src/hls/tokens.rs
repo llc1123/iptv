@@ -130,11 +130,11 @@ impl TokenStore {
         if values.iter().any(|(url, _)| url.len() > URL_MAX_BYTES) {
             return Err(TokenStoreError::Invalid);
         }
-        let now = Instant::now();
         let mut entries = self
             .entries
             .lock()
             .map_err(|_| TokenStoreError::Unavailable)?;
+        let now = Instant::now();
         entries.cleanup(now);
         let owner = match context {
             PlaybackContext::Live => None,
@@ -193,11 +193,11 @@ impl TokenStore {
 
     /// Renews one live token or its entire replay session in constant time.
     pub fn resolve(&self, token: &str) -> Result<Resource, TokenStoreError> {
-        let now = Instant::now();
         let mut entries = self
             .entries
             .lock()
             .map_err(|_| TokenStoreError::Unavailable)?;
+        let now = Instant::now();
         let Entries {
             by_token, sessions, ..
         } = &mut *entries;
