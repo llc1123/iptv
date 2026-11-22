@@ -15,13 +15,16 @@ runtime for an authorized service.
 Download the binary for your architecture from the
 [releases](https://github.com/llc1123/iptv/releases) page — `x86_64`, `aarch64`
 and `armv7` static musl builds, each with `.ipk`/`.apk` OpenWrt packages — or
-build it:
+build it from a checkout:
 
 ```bash
-rustup toolchain install 1.99.1 --profile minimal
-rustup target add --toolchain 1.99.1 x86_64-unknown-linux-musl
+rustup toolchain install --profile minimal
+rustup target add x86_64-unknown-linux-musl
 cargo build --release --locked --target x86_64-unknown-linux-musl --bin iptv-media-server
 ```
+
+Inside the checkout, rustup and Cargo select the compiler pinned in
+`rust-toolchain.toml`.
 
 The result, `target/x86_64-unknown-linux-musl/release/iptv-media-server`, is one
 statically linked file with no C dependencies, no `unsafe` and no runtime
