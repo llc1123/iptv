@@ -1,8 +1,3 @@
-#![expect(
-    clippy::unwrap_used,
-    reason = "loopback provider uses deterministic fixture assertions"
-)]
-
 use std::{
     net::SocketAddr,
     sync::atomic::{AtomicBool, Ordering},

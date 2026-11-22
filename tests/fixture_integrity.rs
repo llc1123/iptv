@@ -7,10 +7,6 @@
 //! silently changing what "parity" means.
 
 #![doc = "Integrity of the frozen golden fixtures."]
-#![expect(
-    clippy::expect_used,
-    reason = "a malformed or missing checked-in fixture should fail the test"
-)]
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
