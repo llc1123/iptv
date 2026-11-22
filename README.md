@@ -15,7 +15,7 @@ runtime for an authorized service.
 Download the binary for your architecture from the
 [releases](https://github.com/llc1123/iptv/releases) page — `x86_64`, `aarch64`
 and `armv7` static musl builds, each with `.ipk`/`.apk` OpenWrt packages — or
-build it from a checkout:
+build it from a checkout with rustup 1.28 or later:
 
 ```bash
 rustup toolchain install --profile minimal

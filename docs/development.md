@@ -2,6 +2,8 @@
 
 ## Toolchain
 
+Use rustup 1.28 or later for the argument-free installation command below.
+
 `rust-toolchain.toml` selects the compiler, rustfmt and clippy. Run commands
 inside the checkout: `rustup toolchain install` installs the selected toolchain,
 and plain `cargo` and `rustup target add` use it. Change the pin in that file;

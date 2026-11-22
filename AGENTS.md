@@ -49,6 +49,7 @@ var/                    local runtime state, credentials and captures
 
 ## Toolchain
 
+- Use rustup 1.28 or later for argument-free toolchain installation.
 - `rust-toolchain.toml` is the single source for the compiler: it pins the
   Rust release with rustfmt and clippy. Inside the checkout rustup selects it
   automatically (`rustup toolchain install` with no toolchain name installs
