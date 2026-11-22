@@ -73,6 +73,24 @@ succeeds when at least one window answered, and the failed count is logged, so a
 successful `POST /metadata/sync` or a completed refresh does not mean every
 window was fetched. Only a cycle where nothing succeeded is an error.
 
+## Replay resource lifetime
+
+Each replay or catch-up request opens a playback session. Its master and media
+playlists, segments, initialization maps and encryption keys share a five-minute
+idle deadline: accessing any of them extends the deadline for the whole session,
+including resources that the player has not requested yet. A player can therefore
+consume a long replay without reloading its complete `EXT-X-ENDLIST` playlist
+every five minutes. Separate replay requests remain independent even when their
+upstream URLs match.
+
+After five minutes without a resource request the session expires. Resuming after
+a longer pause requires opening the replay again to obtain fresh proxy links.
+Live playlists keep their existing per-resource idle expiry and URL reuse.
+The in-memory store remains bounded to 10,000 distinct resources. Registration
+reclaims expired sessions and resources, then evicts the oldest eligible live
+resources if needed. Active replay resources are retained; if the new resources
+still cannot fit, registration fails rather than breaking an existing replay.
+
 ## Logo directory
 
 The provider's channel data carries no logos (`ChannelLogURL` is always empty),

@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use iptv_media_server::{
     epg::Programme,
     guide::{GuideCache, GuideZone, build_windows, parse_catchup_start},
-    hls::{TokenStore, playlist::rewrite_playlist},
+    hls::{PlaybackContext, TokenStore, playlist::rewrite_playlist},
     render::{BaseUrl, RenderKind},
     snapshot::Snapshot,
 };
@@ -41,6 +41,7 @@ fn hls_fixture_cases_match_rewrite_structure_and_resources() {
                     input["body"].as_str().expect("playlist body").as_bytes(),
                     &base,
                     &store,
+                    PlaybackContext::Live,
                 )
                 .expect("playlist rewrite");
                 let mut actual_output = String::from_utf8(body).expect("UTF-8 output");
@@ -71,7 +72,7 @@ fn hls_fixture_cases_match_rewrite_structure_and_resources() {
                         Url::parse(wanted["url"].as_str().unwrap()).expect("fixture URL");
                     wanted_url.set_fragment(None);
                     assert_eq!(
-                        store.resolve(token).unwrap(),
+                        store.resolve(token).unwrap().url,
                         wanted_url.as_str(),
                         "fixture {}",
                         case["id"]
@@ -99,13 +100,16 @@ fn hls_fixture_cases_match_rewrite_structure_and_resources() {
                 let url = input["url"].as_str().unwrap();
                 let suffix = input["suffix"].as_str().unwrap();
                 let token = store
-                    .register_batch(&[(url.to_owned(), suffix.to_owned())])
+                    .register_batch(
+                        &[(url.to_owned(), suffix.to_owned())],
+                        PlaybackContext::Live,
+                    )
                     .expect("resource registration")
                     .remove(0);
                 assert_eq!(url, case["expected"]["url"]);
                 assert_eq!(token.len(), 24 + suffix.len());
                 assert!(token.ends_with(suffix));
-                assert_eq!(store.resolve(&token).unwrap(), url);
+                assert_eq!(store.resolve(&token).unwrap().url, url);
                 asserted += 1;
             }
             kind => panic!("unknown HLS kind: {kind}"),

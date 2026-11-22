@@ -1,10 +1,11 @@
 //! Short-lived, unguessable proxy tokens for upstream HLS resources.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::Mutex,
-    time::{Duration, Instant},
+    time::Duration,
 };
+use tokio::time::Instant;
 
 /// Idle lifetime of a token; each use extends it.
 const TTL: Duration = Duration::from_secs(300);
@@ -24,38 +25,85 @@ impl std::fmt::Display for TokenStoreError {
 }
 impl std::error::Error for TokenStoreError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionId(u64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaybackContext {
+    Live,
+    NewReplay,
+    Replay(SessionId),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct Resource {
+    pub url: String,
+    pub context: PlaybackContext,
+}
+
+// Upstream URLs can contain credentials.
+impl std::fmt::Debug for Resource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Resource")
+            .field("context", &self.context)
+            .finish_non_exhaustive()
+    }
+}
+
+enum Lifetime {
+    Live(Instant),
+    Replay(SessionId),
+}
+
 struct Entry {
     url: String,
-    expires_at: Instant,
+    lifetime: Lifetime,
 }
 
 #[derive(Default)]
 struct Entries {
     by_token: HashMap<String, Entry>,
-    /// Live token for each registered `(url, suffix)`.
-    by_url: HashMap<(String, String), String>,
+    by_url: HashMap<(Option<SessionId>, (String, String)), String>,
+    sessions: HashMap<SessionId, Instant>,
+    next_session: u64,
 }
 
 impl Entries {
-    /// Makes room for `incoming` new tokens: expired entries go first, then
-    /// the soonest-expiring ones.
-    fn evict(&mut self, now: Instant, incoming: usize) {
-        if self.by_token.len() + incoming <= CAPACITY {
-            return;
-        }
-        self.by_token.retain(|_, entry| entry.expires_at > now);
+    fn cleanup(&mut self, now: Instant) {
+        self.sessions.retain(|_, deadline| *deadline > now);
+        self.by_token.retain(|_, entry| match entry.lifetime {
+            Lifetime::Live(deadline) => deadline > now,
+            Lifetime::Replay(id) => self.sessions.contains_key(&id),
+        });
+        self.prune_index();
+    }
+
+    /// Published replay resources are never evicted while their session is active.
+    fn evict(&mut self, incoming: usize, protected: &HashSet<&str>) -> Result<(), TokenStoreError> {
         let excess = (self.by_token.len() + incoming).saturating_sub(CAPACITY);
         if excess > 0 {
             let mut oldest: Vec<(Instant, String)> = self
                 .by_token
                 .iter()
-                .map(|(token, entry)| (entry.expires_at, token.clone()))
+                .filter(|(token, _)| !protected.contains(token.as_str()))
+                .filter_map(|(token, entry)| match entry.lifetime {
+                    Lifetime::Live(deadline) => Some((deadline, token.clone())),
+                    Lifetime::Replay(_) => None,
+                })
                 .collect();
+            if oldest.len() < excess {
+                return Err(TokenStoreError::Capacity);
+            }
             oldest.sort_unstable();
             for (_, token) in oldest.into_iter().take(excess) {
                 self.by_token.remove(&token);
             }
+            self.prune_index();
         }
+        Ok(())
+    }
+
+    fn prune_index(&mut self) {
         let by_token = &self.by_token;
         self.by_url.retain(|_, token| by_token.contains_key(token));
     }
@@ -67,71 +115,110 @@ pub struct TokenStore {
 }
 
 impl TokenStore {
-    /// Returns a token for every `(url, suffix)` pair, registering none when
-    /// any URL is rejected. A pair that is still registered keeps its token,
-    /// so repeated fetches of a live playlist only add its new segments.
+    /// Reuses each `(owner, url, suffix)` token. New replay requests get distinct
+    /// sessions only after successful, nonempty registration. Expired sessions
+    /// cannot be revived. Capacity failures preserve published replay resources.
     pub fn register_batch(
         &self,
         values: &[(String, String)],
+        context: PlaybackContext,
     ) -> Result<Vec<String>, TokenStoreError> {
-        if values.len() > CAPACITY {
+        let unique: HashSet<_> = values.iter().collect();
+        if unique.len() > CAPACITY {
             return Err(TokenStoreError::Capacity);
         }
         if values.iter().any(|(url, _)| url.len() > URL_MAX_BYTES) {
             return Err(TokenStoreError::Invalid);
         }
-        let now = Instant::now();
         let mut entries = self
             .entries
             .lock()
             .map_err(|_| TokenStoreError::Unavailable)?;
-        // Batch entries that are already registered are the live playlist's
-        // current segments: extend them first so eviction takes others.
-        let mut missing = 0;
-        let Entries { by_url, by_token } = &mut *entries;
-        for value in values {
-            match by_url.get(value).and_then(|token| by_token.get_mut(token)) {
-                Some(entry) => entry.expires_at = now + TTL,
-                None => missing += 1,
+        let now = Instant::now();
+        entries.cleanup(now);
+        let owner = match context {
+            PlaybackContext::Live => None,
+            PlaybackContext::NewReplay => Some(SessionId(
+                entries
+                    .next_session
+                    .checked_add(1)
+                    .ok_or(TokenStoreError::Capacity)?,
+            )),
+            PlaybackContext::Replay(id) => {
+                if !entries.sessions.contains_key(&id) {
+                    return Err(TokenStoreError::Unavailable);
+                }
+                Some(id)
             }
+        };
+        if values.is_empty() {
+            return Ok(Vec::new());
         }
-        entries.evict(now, missing);
-        values
-            .iter()
-            .map(|value| {
-                let token = if let Some(token) = entries.by_url.get(value) {
-                    token.clone()
-                } else {
-                    let token = random_token(&value.1)?;
-                    entries.by_url.insert(value.clone(), token.clone());
-                    token
-                };
-                entries.by_token.insert(
-                    token.clone(),
-                    Entry {
-                        url: value.0.clone(),
-                        expires_at: now + TTL,
+        let mut pending = HashMap::new();
+        let mut missing = 0;
+        for value in unique {
+            let key = (owner, value.clone());
+            let token = if let Some(token) = entries.by_url.get(&key) {
+                token.clone()
+            } else {
+                missing += 1;
+                random_token(&value.1)?
+            };
+            pending.insert(value, token);
+        }
+        let protected = pending.values().map(String::as_str).collect();
+        entries.evict(missing, &protected)?;
+        let mut result = Vec::with_capacity(values.len());
+        for value in values {
+            let token = &pending[value];
+            entries.by_url.insert((owner, value.clone()), token.clone());
+            entries.by_token.insert(
+                token.clone(),
+                Entry {
+                    url: value.0.clone(),
+                    lifetime: match owner {
+                        None => Lifetime::Live(now + TTL),
+                        Some(id) => Lifetime::Replay(id),
                     },
-                );
-                Ok(token)
-            })
-            .collect()
+                },
+            );
+            result.push(token.clone());
+        }
+        if let Some(id) = owner {
+            entries.sessions.insert(id, now + TTL);
+            entries.next_session = entries.next_session.max(id.0);
+        }
+        Ok(result)
     }
 
-    /// Returns the URL behind a live token and extends its lifetime.
-    pub fn resolve(&self, token: &str) -> Result<String, TokenStoreError> {
-        let now = Instant::now();
+    /// Renews one live token or its entire replay session in constant time.
+    pub fn resolve(&self, token: &str) -> Result<Resource, TokenStoreError> {
         let mut entries = self
             .entries
             .lock()
             .map_err(|_| TokenStoreError::Unavailable)?;
-        let entry = entries
-            .by_token
+        let now = Instant::now();
+        let Entries {
+            by_token, sessions, ..
+        } = &mut *entries;
+        let entry = by_token
             .get_mut(token)
-            .filter(|entry| entry.expires_at > now)
             .ok_or(TokenStoreError::Unavailable)?;
-        entry.expires_at = now + TTL;
-        Ok(entry.url.clone())
+        let (deadline, context) = match &mut entry.lifetime {
+            Lifetime::Live(deadline) => (deadline, PlaybackContext::Live),
+            Lifetime::Replay(id) => (
+                sessions.get_mut(id).ok_or(TokenStoreError::Unavailable)?,
+                PlaybackContext::Replay(*id),
+            ),
+        };
+        if *deadline <= now {
+            return Err(TokenStoreError::Unavailable);
+        }
+        *deadline = now + TTL;
+        Ok(Resource {
+            url: entry.url.clone(),
+            context,
+        })
     }
 }
 
@@ -144,7 +231,9 @@ fn random_token(suffix: &str) -> Result<String, TokenStoreError> {
     for chunk in bytes.as_chunks::<3>().0 {
         let bits = u32::from(chunk[0]) << 16 | u32::from(chunk[1]) << 8 | u32::from(chunk[2]);
         for shift in [18, 12, 6, 0] {
-            token.push(char::from(ALPHABET[(bits >> shift & 63) as usize]));
+            let index =
+                usize::try_from(bits >> shift & 63).map_err(|_| TokenStoreError::Invalid)?;
+            token.push(char::from(ALPHABET[index]));
         }
     }
     token.push_str(suffix);
@@ -152,97 +241,4 @@ fn random_token(suffix: &str) -> Result<String, TokenStoreError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn pair(url: &str, suffix: &str) -> (String, String) {
-        (url.to_owned(), suffix.to_owned())
-    }
-
-    #[test]
-    fn a_full_store_evicts_others_before_reregistered_batch_entries() {
-        let store = TokenStore::default();
-        let live = store
-            .register_batch(&[pair("http://up/live.ts", ".ts")])
-            .unwrap();
-        let filler: Vec<_> = (1..CAPACITY)
-            .map(|index| pair(&format!("http://up/{index}.ts"), ".ts"))
-            .collect();
-        store.register_batch(&filler).unwrap();
-        let again = store
-            .register_batch(&[
-                pair("http://up/live.ts", ".ts"),
-                pair("http://up/new.ts", ".ts"),
-            ])
-            .unwrap();
-        assert_eq!(again[0], live[0]);
-        assert_eq!(store.entries.lock().unwrap().by_token.len(), CAPACITY);
-    }
-
-    #[test]
-    fn registered_tokens_resolve() {
-        let store = TokenStore::default();
-        let tokens = store
-            .register_batch(&[pair("http://upstream.test/segment.ts", ".ts")])
-            .unwrap();
-        assert_eq!(&tokens[0][24..], ".ts");
-        assert_eq!(
-            store.resolve(&tokens[0]).unwrap(),
-            "http://upstream.test/segment.ts"
-        );
-        assert_eq!(store.resolve("unknown"), Err(TokenStoreError::Unavailable));
-    }
-
-    #[test]
-    fn batch_registration_is_atomic_when_one_url_is_invalid() {
-        let store = TokenStore::default();
-        let existing = store
-            .register_batch(&[pair("http://upstream.test/existing.ts", ".ts")])
-            .unwrap();
-        let invalid = "x".repeat(URL_MAX_BYTES + 1);
-        assert_eq!(
-            store.register_batch(&[
-                pair("http://upstream.test/new.ts", ".ts"),
-                pair(&invalid, ".ts")
-            ]),
-            Err(TokenStoreError::Invalid)
-        );
-        assert_eq!(store.entries.lock().unwrap().by_token.len(), 1);
-        assert!(store.resolve(&existing[0]).is_ok());
-    }
-
-    #[test]
-    fn live_urls_keep_their_token_and_suffix_variants_do_not_collide() {
-        let store = TokenStore::default();
-        let first = store
-            .register_batch(&[pair("http://upstream.test/a", ".ts")])
-            .unwrap();
-        let again = store
-            .register_batch(&[pair("http://upstream.test/a", ".ts")])
-            .unwrap();
-        let bare = store
-            .register_batch(&[pair("http://upstream.test/a", "")])
-            .unwrap();
-        assert_eq!(first, again);
-        assert_ne!(first, bare);
-        assert_eq!(store.entries.lock().unwrap().by_token.len(), 2);
-    }
-
-    #[test]
-    fn full_store_evicts_the_soonest_expiring_entries() {
-        let store = TokenStore::default();
-        let old: Vec<_> = (0..CAPACITY)
-            .map(|index| pair(&format!("http://upstream.test/old{index}"), ""))
-            .collect();
-        let old = store.register_batch(&old).unwrap();
-        store.resolve(&old[0]).unwrap();
-        let new = store
-            .register_batch(&[pair("http://upstream.test/new", ".ts")])
-            .unwrap();
-        let entries = store.entries.lock().unwrap();
-        assert_eq!(entries.by_token.len(), CAPACITY);
-        assert_eq!(entries.by_url.len(), CAPACITY);
-        assert!(entries.by_token.contains_key(&old[0]));
-        assert!(entries.by_token.contains_key(&new[0]));
-    }
-}
+mod tests;

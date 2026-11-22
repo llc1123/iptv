@@ -1,7 +1,8 @@
 //! Rewrites upstream HLS playlists so every resource goes through `/_hls`.
 
-use super::tokens::{CAPACITY, TokenStore, TokenStoreError};
+use super::tokens::{CAPACITY, PlaybackContext, TokenStore, TokenStoreError};
 use reqwest::Url;
+use std::collections::HashMap;
 
 /// Largest upstream playlist the proxy reads.
 pub const PLAYLIST_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -19,18 +20,28 @@ pub fn rewrite_playlist(
     body: &[u8],
     base_url: &Url,
     tokens: &TokenStore,
+    context: PlaybackContext,
 ) -> Result<Vec<u8>, TokenStoreError> {
     let text = String::from_utf8_lossy(body)
         .replace("\r\n", "\n")
         .replace('\r', "\n");
     let mut parts = Vec::new();
     let mut resources = Vec::new();
+    let mut indexes = HashMap::new();
     let mut add = |parts: &mut Vec<Part<'_>>, value: &str, default_suffix: &str| {
-        parts.push(Part::Resource(resources.len()));
-        resources.push(resource(base_url, value, default_suffix)?);
-        if resources.len() > CAPACITY {
-            return Err(TokenStoreError::Capacity);
-        }
+        let entry = resource(base_url, value, default_suffix)?;
+        let index = if let Some(index) = indexes.get(&entry) {
+            *index
+        } else {
+            if resources.len() == CAPACITY {
+                return Err(TokenStoreError::Capacity);
+            }
+            let index = resources.len();
+            indexes.insert(entry.clone(), index);
+            resources.push(entry);
+            index
+        };
+        parts.push(Part::Resource(index));
         Ok(())
     };
     for line in text.lines() {
@@ -53,7 +64,7 @@ pub fn rewrite_playlist(
         }
         parts.push(Part::EndOfLine);
     }
-    let tokens = tokens.register_batch(&resources)?;
+    let tokens = tokens.register_batch(&resources, context)?;
     let mut output = String::with_capacity(text.len() + tokens.len() * 32);
     for part in parts {
         match part {
@@ -87,6 +98,53 @@ fn resource(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write;
+
+    #[test]
+    fn too_many_distinct_resources_are_rejected_before_registration() {
+        let store = TokenStore::default();
+        let mut body = String::new();
+        for index in 0..=CAPACITY {
+            writeln!(body, "segment{index}.ts").unwrap();
+        }
+        assert_eq!(
+            rewrite_playlist(
+                body.as_bytes(),
+                &Url::parse("http://up/replay.m3u8").unwrap(),
+                &store,
+                PlaybackContext::NewReplay,
+            ),
+            Err(TokenStoreError::Capacity)
+        );
+    }
+
+    #[test]
+    fn repeated_uri_references_count_once_toward_capacity() {
+        let store = TokenStore::default();
+        let base = Url::parse("http://up/replay.m3u8").unwrap();
+        let body = format!(
+            "#EXTM3U\n{}",
+            "#EXT-X-KEY:METHOD=AES-128,URI=\"key\"\nsegment.ts\n"
+                .repeat(super::super::tokens::CAPACITY)
+        );
+        let rewritten =
+            rewrite_playlist(body.as_bytes(), &base, &store, PlaybackContext::NewReplay).unwrap();
+        let text = String::from_utf8(rewritten).unwrap();
+        let references: Vec<_> = text
+            .split("/_hls/")
+            .skip(1)
+            .map(|rest| rest.split(['"', '\n']).next().unwrap())
+            .collect();
+        assert_eq!(references.len(), 2 * super::super::tokens::CAPACITY);
+        for pair in references.as_chunks::<2>().0 {
+            assert_eq!(pair, &references[..2]);
+        }
+        assert_eq!(store.resolve(references[0]).unwrap().url, "http://up/key");
+        assert_eq!(
+            store.resolve(references[1]).unwrap().url,
+            "http://up/segment.ts"
+        );
+    }
 
     #[test]
     fn rewrite_registers_attribute_and_segment_urls_without_fragments() {
@@ -96,6 +154,7 @@ mod tests {
             b"#EXT-X-MAP:URI=\"init.mp4#part\"\r\nsegment\r\n",
             &base,
             &tokens,
+            PlaybackContext::Live,
         )
         .unwrap();
         let body = String::from_utf8(body).unwrap();
@@ -107,13 +166,13 @@ mod tests {
             .unwrap();
         assert_eq!(&map_token[24..], ".mp4");
         assert_eq!(
-            tokens.resolve(map_token).unwrap(),
+            tokens.resolve(map_token).unwrap().url,
             "http://upstream.test/live/init.mp4"
         );
         let segment = lines.next().unwrap().strip_prefix("/_hls/").unwrap();
         assert_eq!(&segment[24..], ".ts");
         assert_eq!(
-            tokens.resolve(segment).unwrap(),
+            tokens.resolve(segment).unwrap().url,
             "http://upstream.test/live/segment"
         );
         assert!(body.ends_with('\n'));
