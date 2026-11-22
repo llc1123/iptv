@@ -49,7 +49,15 @@ var/                    local runtime state, credentials and captures
 
 ## Toolchain
 
-- Rust is pinned to 1.99.1 (`rust-toolchain.toml`) with rustfmt and clippy.
+- Use rustup 1.28 or later for argument-free toolchain installation.
+- `rust-toolchain.toml` is the single source for the compiler: it pins the
+  Rust release with rustfmt and clippy. Inside the checkout rustup selects it
+  automatically (`rustup toolchain install` with no toolchain name installs
+  it), so plain `cargo` commands use it. Never hardcode its version in
+  commands, scripts or workflows; to change compilers, edit that file alone.
+- `rust-version` in `Cargo.toml` is the crate's MSRV, an independent number
+  that never selects a compiler. Change it only when the minimum supported
+  Rust version changes, not when the pinned toolchain moves.
 - Static builds: `x86_64-unknown-linux-musl`, plus aarch64/armv7 musl linked
   with `rust-lld` via `.cargo/config.toml`. The dependency tree has no C code.
 - Shell is checked with shellcheck (error severity) and shfmt; the LuCI views

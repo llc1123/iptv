@@ -72,13 +72,13 @@ jobs:
           shared-key: release-${{ matrix.target }}
 
       - name: Install the target
-        run: rustup target add --toolchain 1.99.1 ${{ matrix.target }}
+        run: rustup target add ${{ matrix.target }}
 
       # The bundled LLD links every musl target, so no C cross toolchain is
       # needed and the result is fully static.
       - name: Build
         run: |
-          cargo +1.99.1 build --locked --release \
+          cargo build --locked --release \
             --target ${{ matrix.target }} --bin iptv-media-server
 
       - name: Stage the binary

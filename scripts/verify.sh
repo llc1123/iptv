@@ -10,7 +10,6 @@ run() {
     "$@"
 }
 
-cargo=(rustup run 1.99.1 cargo)
 # The local gate runs offline against a populated cache; CI sets
 # VERIFY_ALLOW_NETWORK=1 so cargo may fetch the crates it needs.
 offline=(--offline --locked)
@@ -23,13 +22,13 @@ openhwrt_scripts=(
     deploy/openwrt/luci-app-iptv/root/lib/netifd/proto/iptv.sh
 )
 
-run "${cargo[@]}" fmt --all -- --check
-run "${cargo[@]}" clippy "${offline[@]}" --all-targets --all-features -- -D warnings
-run "${cargo[@]}" test "${offline[@]}" --tests --bins --all-features
-run "${cargo[@]}" build "${offline[@]}" --release --bin iptv-media-server
+run cargo fmt --all -- --check
+run cargo clippy "${offline[@]}" --all-targets --all-features -- -D warnings
+run cargo test "${offline[@]}" --tests --bins --all-features
+run cargo build "${offline[@]}" --release --bin iptv-media-server
 
 # The fixtures are frozen; this fails if one was edited by hand.
-run "${cargo[@]}" test "${offline[@]}" --test fixture_integrity
+run cargo test "${offline[@]}" --test fixture_integrity
 
 # Shell carries the packaging logic, so lint it. Only errors are enforced: the
 # OpenWrt scripts legitimately use `local`, `[[ ]]` and procd variables that a

@@ -1,5 +1,17 @@
 # Development and verification
 
+## Toolchain
+
+Use rustup 1.28 or later for the argument-free installation command below.
+
+`rust-toolchain.toml` selects the compiler, rustfmt and clippy. Run commands
+inside the checkout: `rustup toolchain install` installs the selected toolchain,
+and plain `cargo` and `rustup target add` use it. Change the pin in that file;
+do not repeat it in commands, scripts or workflows.
+
+`Cargo.toml`'s `rust-version` declares the minimum supported Rust version (MSRV),
+not the compiler to select. Update it only when minimum support changes.
+
 ## The local gate
 
 ```bash
@@ -7,9 +19,9 @@ cargo fetch --locked
 bash scripts/verify.sh
 ```
 
-It needs, besides the pinned Rust 1.99.1 toolchain: `shellcheck`, `shfmt` **3.8.0**
-(formatting shifts between minor versions, and CI pins that release) and
-`node` for the LuCI views.
+It needs, besides the toolchain pinned in `rust-toolchain.toml`: `shellcheck`,
+`shfmt` **3.8.0** (formatting shifts between minor versions, and CI pins that
+release) and `node` for the LuCI views.
 
 Offline against a populated cache; CI sets `VERIFY_ALLOW_NETWORK=1` so cargo may
 fetch. It runs rustfmt, clippy with warnings denied, the test suite (in-process
@@ -31,7 +43,7 @@ same commit — never edit a fixture to make a test pass.
 ## Static builds
 
 ```bash
-rustup target add --toolchain 1.99.1 \
+rustup target add \
   x86_64-unknown-linux-musl aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf
 cargo build --release --locked --target x86_64-unknown-linux-musl --bin iptv-media-server
 ```
