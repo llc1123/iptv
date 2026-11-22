@@ -2,7 +2,7 @@ use crate::{
     epg::EpgClient,
     error::RequestError,
     guide::{GuideZone, parse_catchup_start},
-    hls::TokenStore,
+    hls::{PlaybackContext, Resource, TokenStore},
     snapshot::Snapshot,
 };
 mod feeds;
@@ -109,7 +109,17 @@ async fn stream(
             .into_response();
     }
     match state.epg.hls_url(&channel_id).await {
-        Ok(url) => forward(&state, request, url).await,
+        Ok(url) => {
+            forward(
+                &state,
+                request,
+                Resource {
+                    url,
+                    context: PlaybackContext::Live,
+                },
+            )
+            .await
+        }
         Err(error) => {
             tracing::warn!(%error, channel_id, "live HLS URL lookup failed");
             RequestError::new("epg-tvod", error.to_string()).into_response()
@@ -137,7 +147,17 @@ async fn replay(
             .into_response();
     };
     match state.epg.tvod_url(programme).await {
-        Ok(url) => forward(&state, request, url).await,
+        Ok(url) => {
+            forward(
+                &state,
+                request,
+                Resource {
+                    url,
+                    context: PlaybackContext::NewReplay,
+                },
+            )
+            .await
+        }
         Err(error) => {
             tracing::warn!(%error, channel_id, "replay URL lookup failed");
             RequestError::new("epg-replay", error.to_string()).into_response()
@@ -187,7 +207,17 @@ async fn replay_at(state: &AppState, channel_id: &str, value: &str, request: Req
         .into_response();
     };
     match state.epg.tvod_url(programme).await {
-        Ok(url) => forward(state, request, url).await,
+        Ok(url) => {
+            forward(
+                state,
+                request,
+                Resource {
+                    url,
+                    context: PlaybackContext::NewReplay,
+                },
+            )
+            .await
+        }
         Err(error) => {
             tracing::warn!(%error, channel_id, "catch-up URL lookup failed");
             RequestError::new("epg-replay", error.to_string()).into_response()
@@ -201,7 +231,7 @@ async fn resource(
     request: Request,
 ) -> Response {
     match state.tokens.resolve(&token) {
-        Ok(url) => forward(&state, request, url).await,
+        Ok(resource) => forward(&state, request, resource).await,
         Err(_) => RequestError::new("hls-proxy", "playlist resource expired").into_response(),
     }
 }

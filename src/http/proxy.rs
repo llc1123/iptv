@@ -1,7 +1,10 @@
 use super::AppState;
 use crate::{
     error::RequestError,
-    hls::playlist::{PLAYLIST_MAX_BYTES, rewrite_playlist},
+    hls::{
+        Resource,
+        playlist::{PLAYLIST_MAX_BYTES, rewrite_playlist},
+    },
     render::BaseUrl,
 };
 use axum::{
@@ -13,8 +16,8 @@ use axum::{
 use futures_util::stream;
 use reqwest::Url;
 
-pub(crate) async fn forward(state: &AppState, request: Request, url: String) -> Response {
-    let Ok(url) = Url::parse(&url) else {
+pub(crate) async fn forward(state: &AppState, request: Request, resource: Resource) -> Response {
+    let Ok(url) = Url::parse(&resource.url) else {
         tracing::warn!("upstream HLS URL was invalid");
         return RequestError::new("hls-proxy", "invalid upstream URL").into_response();
     };
@@ -53,7 +56,8 @@ pub(crate) async fn forward(state: &AppState, request: Request, url: String) -> 
                 return RequestError::new("hls-proxy", detail).into_response();
             }
         };
-        let rewritten = match rewrite_playlist(&bytes, &final_url, &state.tokens) {
+        let rewritten = match rewrite_playlist(&bytes, &final_url, &state.tokens, resource.context)
+        {
             Ok(body) => body,
             Err(error) => {
                 tracing::warn!(%error, "HLS playlist rewrite failed");

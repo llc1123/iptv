@@ -113,7 +113,15 @@ pub fn response_for(request: &RequestRecord, address: SocketAddr, state: &Provid
         "/EPG/jsp/jkjiaoyutest/en/epg4ChannelPlayByAjax.jsp" if request.query.contains("channelId=large") => format!(r#"{{"hlsUrl":"http://{address}/large.m3u8"}}"#),
         "/EPG/jsp/jkjiaoyutest/en/epg4ChannelPlayByAjax.jsp" if request.query.contains("channelId=bad") => format!(r#"{{"hlsUrl":"http://{address}/fail.m3u8"}}"#),
         "/EPG/jsp/jkjiaoyutest/en/epg4ChannelPlayByAjax.jsp" => format!(r#"{{"hlsUrl":"http://{address}/live.m3u8"}}"#),
-        "/live.m3u8" | "/tvod.m3u8" | "/playlist" => "#EXTM3U\n#EXTINF:1,\nsegment.ts#fragment\n".into(),
+        "/live.m3u8" | "/playlist" => "#EXTM3U\n#EXTINF:1,\nsegment.ts#fragment\n".into(),
+        "/tvod.m3u8" => "#EXTM3U\n#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"replay/root.key\"\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nreplay/media.m3u8\n".into(),
+        "/replay/media.m3u8" => "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"media.key\"\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:240,\nfirst.ts\n#EXTINF:240,\nsecond.ts\n#EXTINF:240,\nlast.ts\n#EXT-X-ENDLIST\n".into(),
+        "/replay/root.key" => "root-key".into(),
+        "/replay/media.key" => "media-key".into(),
+        "/replay/init.mp4" => "init-bytes".into(),
+        "/replay/first.ts" => "first-bytes".into(),
+        "/replay/second.ts" => "second-bytes".into(),
+        "/replay/last.ts" => "last-bytes".into(),
         "/large.m3u8" => "#EXTM3U\n".into(),
         "/segment.ts" => "segment-bytes".into(),
         _ => String::new(),
@@ -135,6 +143,13 @@ pub fn response_for(request: &RequestRecord, address: SocketAddr, state: &Provid
                 | "/EPG/jsp/jkjiaoyutest/en/epg4ChannelPlayByAjax.jsp"
                 | "/live.m3u8"
                 | "/tvod.m3u8"
+                | "/replay/media.m3u8"
+                | "/replay/root.key"
+                | "/replay/media.key"
+                | "/replay/init.mp4"
+                | "/replay/first.ts"
+                | "/replay/second.ts"
+                | "/replay/last.ts"
                 | "/playlist"
                 | "/large.m3u8"
                 | "/segment.ts"
