@@ -71,4 +71,4 @@ jobs:
           shared-key: rust
 
       - name: Verify the fixtures were not edited
-        run: cargo +1.99.1 test --locked --test fixture_integrity
+        run: cargo test --locked --test fixture_integrity
