@@ -1,9 +1,4 @@
 #![doc = "Golden parity tests for the Python-oracle fixture families."]
-#![expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "fixture helpers fail the test on malformed checked-in fixtures"
-)]
 
 use std::{collections::HashMap, str::FromStr, sync::Arc};
 

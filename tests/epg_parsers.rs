@@ -1,8 +1,4 @@
 #![doc = "Fixture-driven acceptance tests for provider EPG models and parsers."]
-#![expect(
-    clippy::expect_used,
-    reason = "fixture tests use checked-in valid inputs"
-)]
 
 use axum::{body::to_bytes, response::IntoResponse};
 use iptv_media_server::{

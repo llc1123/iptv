@@ -1,8 +1,3 @@
-#![expect(
-    clippy::unwrap_used,
-    reason = "loopback fixture setup uses deterministic test assertions"
-)]
-
 use axum::{Router, body::Body};
 use clap::Parser;
 use iptv_media_server::{

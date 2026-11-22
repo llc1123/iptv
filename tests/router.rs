@@ -1,8 +1,3 @@
-#![expect(
-    clippy::unwrap_used,
-    reason = "router fixture uses deterministic local requests"
-)]
-
 mod support;
 
 use axum::{
